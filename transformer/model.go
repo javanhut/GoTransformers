@@ -6,7 +6,9 @@ import (
 	"transformer/attention"
 	"transformer/embedding"
 	"transformer/feedforward"
+	"transformer/hyperconnection"
 	"transformer/lossfunction"
+	"transformer/mixtureofexperts"
 	"transformer/normalization"
 	"transformer/optimizer"
 	"transformer/parameter"
@@ -15,13 +17,15 @@ import (
 )
 
 type Model struct {
-	Settings       Settings
-	TokenEmbedding *embedding.Embedding
-	Blocks         []*Block
-	FinalNorm      *normalization.RMSNorm
-	OutputLayer    *perceptron.Layer
+	Settings            Settings
+	TokenEmbedding      *embedding.Embedding
+	Blocks              []*Block
+	FinalNorm           *normalization.RMSNorm
+	OutputLayer         *perceptron.Layer
+	MultiTokenPredictor *MultiTokenPredictor
 
 	generatedPositions int
+	lastScores         vectormath.Vector
 }
 
 func NewModel(settings Settings) (*Model, error) {
@@ -36,62 +40,114 @@ func NewModel(settings Settings) (*Model, error) {
 	}
 
 	var groupOwner *attention.SelfAttention
+	standardBlocksSoFar := 0
 	for blockIndex := 0; blockIndex < settings.NumberOfBlocks; blockIndex++ {
 		name := fmt.Sprintf("block%d", blockIndex+1)
-
-		var blockAttention *attention.SelfAttention
-		if settings.blockOwnsKeysAndValues(blockIndex) {
-			blockAttention = attention.NewSelfAttention(name+".attention", settings.VectorSize, settings.NumberOfHeads, true)
-			blockAttention.UseRotaryPositions = settings.UseRotaryPositions
-			blockAttention.CachePrecision = settings.CachePrecision
-			blockAttention.TrainAtCachePrecision = settings.TrainAtCachePrecision
-			groupOwner = blockAttention
-		} else {
-			blockAttention = attention.NewBorrowingSelfAttention(name+".attention", groupOwner, settings.GroupSharingMode)
-		}
-		blockAttention.TopK = settings.TopK
-		blockAttention.WindowSize = 0
-		if settings.blockUsesWindow(blockIndex) {
-			blockAttention.WindowSize = settings.WindowSize
-		}
-
-		var blockFeedForward *feedforward.GatedFeedForward
-		if settings.FeedForwardClampLimit > 0 {
-			blockFeedForward = feedforward.NewClampedSwiGLU(name+".feedForward", settings.VectorSize, settings.FeedForwardSize, settings.FeedForwardClampLimit)
-		} else {
-			blockFeedForward = feedforward.NewSwiGLU(name+".feedForward", settings.VectorSize, settings.FeedForwardSize)
-		}
-
-		model.Blocks = append(model.Blocks, &Block{
+		block := &Block{
 			AttentionNorm:   normalization.NewRMSNorm(name+".attentionNorm", settings.VectorSize),
-			Attention:       blockAttention,
 			FeedForwardNorm: normalization.NewRMSNorm(name+".feedForwardNorm", settings.VectorSize),
-			FeedForward:     blockFeedForward,
-		})
+		}
+
+		kind := settings.attentionKindFor(blockIndex)
+		if kind == StandardAttention {
+			block.Attention, groupOwner = makeStandardAttention(settings, name+".attention", blockIndex, standardBlocksSoFar, groupOwner)
+			standardBlocksSoFar++
+		} else {
+			compressed := attention.NewCompressedAttention(name+".attention", settings.VectorSize, settings.compressedOptions(kind))
+			compressed.AttendToAllWhileTraining = settings.AttendToAllWhileTraining
+			block.Attention = compressed
+		}
+
+		block.FeedForward = makeFeedForward(settings, name+".feedForward", blockIndex)
+
+		if settings.residualStreams() > 1 {
+			block.AttentionConnection = hyperconnection.NewHyperConnection(name+".attentionConnection", settings.VectorSize, settings.residualStreams())
+			block.FeedForwardConnection = hyperconnection.NewHyperConnection(name+".feedForwardConnection", settings.VectorSize, settings.residualStreams())
+		}
+		model.Blocks = append(model.Blocks, block)
+	}
+
+	if settings.MultiTokenPrediction {
+		model.MultiTokenPredictor = newMultiTokenPredictor(settings, model.TokenEmbedding)
 	}
 	return model, nil
+}
+
+func makeStandardAttention(settings Settings, name string, blockIndex int, standardBlocksSoFar int, groupOwner *attention.SelfAttention) (*attention.SelfAttention, *attention.SelfAttention) {
+	var standard *attention.SelfAttention
+	if standardBlocksSoFar%settings.BlocksPerKeyValueGroup == 0 || groupOwner == nil {
+		standard = attention.NewSelfAttentionWithOptions(name, settings.VectorSize, settings.standardOptions())
+		groupOwner = standard
+	} else {
+		standard = attention.NewBorrowingSelfAttention(name, groupOwner, settings.GroupSharingMode)
+	}
+	standard.TopK = settings.TopK
+	standard.WindowSize = 0
+	if settings.blockUsesWindow(blockIndex) {
+		standard.WindowSize = settings.WindowSize
+	}
+	return standard, groupOwner
+}
+
+func makeFeedForward(settings Settings, name string, blockIndex int) FeedForwardLayer {
+	if settings.UseMixtureOfExperts {
+		var mixture *mixtureofexperts.MixtureOfExperts
+		if settings.FeedForwardClampLimit > 0 {
+			mixture = mixtureofexperts.NewClampedMixtureOfExperts(name, settings.VectorSize, settings.ExpertHiddenSize, settings.NumberOfSharedExperts, settings.NumberOfRoutedExperts, settings.ExpertsPerToken, settings.FeedForwardClampLimit)
+		} else {
+			mixture = mixtureofexperts.NewMixtureOfExperts(name, settings.VectorSize, settings.ExpertHiddenSize, settings.NumberOfSharedExperts, settings.NumberOfRoutedExperts, settings.ExpertsPerToken)
+		}
+		mixture.UseHashRouting = blockIndex < settings.HashRoutedBlocks
+		return mixture
+	}
+	if settings.FeedForwardClampLimit > 0 {
+		return gatedFeedForwardLayer{inner: feedforward.NewClampedSwiGLU(name, settings.VectorSize, settings.FeedForwardSize, settings.FeedForwardClampLimit)}
+	}
+	return gatedFeedForwardLayer{inner: feedforward.NewSwiGLU(name, settings.VectorSize, settings.FeedForwardSize)}
+}
+
+func (model *Model) hiddenStates(tokenIDs []int) vectormath.Matrix {
+	values := model.TokenEmbedding.Forward(tokenIDs)
+	if !model.Settings.UseRotaryPositions {
+		values = vectormath.AddMatrices(values, embedding.PositionalEncoding(len(tokenIDs), model.Settings.VectorSize))
+	}
+	streams := model.Settings.residualStreams()
+	if streams > 1 {
+		values = hyperconnection.ExpandToStreams(values, streams)
+	}
+	for _, block := range model.Blocks {
+		values = block.Forward(values, tokenIDs)
+	}
+	if streams > 1 {
+		values = hyperconnection.CollapseStreams(values, streams)
+	}
+	return values
+}
+
+func (model *Model) hiddenStatesBackward(gradients vectormath.Matrix) {
+	streams := model.Settings.residualStreams()
+	if streams > 1 {
+		gradients = hyperconnection.CollapseStreamsBackward(gradients, streams)
+	}
+	for i := len(model.Blocks) - 1; i >= 0; i-- {
+		gradients = model.Blocks[i].Backward(gradients)
+	}
+	if streams > 1 {
+		gradients = hyperconnection.ExpandToStreamsBackward(gradients, streams)
+	}
+	model.TokenEmbedding.Backward(gradients)
 }
 
 func (model *Model) Forward(tokenIDs []int) vectormath.Matrix {
 	if len(tokenIDs) == 0 {
 		panic("Model.Forward: no tokens given")
 	}
-	values := model.TokenEmbedding.Forward(tokenIDs)
-	if !model.Settings.UseRotaryPositions {
-		values = vectormath.AddMatrices(values, embedding.PositionalEncoding(len(tokenIDs), model.Settings.VectorSize))
-	}
-	for _, block := range model.Blocks {
-		values = block.Forward(values)
-	}
-	return model.OutputLayer.Forward(model.FinalNorm.Forward(values))
+	model.checkTokenIDs(tokenIDs)
+	return model.OutputLayer.Forward(model.FinalNorm.Forward(model.hiddenStates(tokenIDs)))
 }
 
 func (model *Model) Backward(scoreGradients vectormath.Matrix) {
-	gradients := model.FinalNorm.Backward(model.OutputLayer.Backward(scoreGradients))
-	for i := len(model.Blocks) - 1; i >= 0; i-- {
-		gradients = model.Blocks[i].Backward(gradients)
-	}
-	model.TokenEmbedding.Backward(gradients)
+	model.hiddenStatesBackward(model.FinalNorm.Backward(model.OutputLayer.Backward(scoreGradients)))
 }
 
 func (model *Model) Parameters() []parameter.Parameter {
@@ -100,8 +156,14 @@ func (model *Model) Parameters() []parameter.Parameter {
 	for _, block := range model.Blocks {
 		parameters = append(parameters, block.Parameters()...)
 	}
+	if model.MultiTokenPredictor != nil {
+		parameters = append(parameters, model.MultiTokenPredictor.Parameters()...)
+	}
 	parameters = append(parameters, model.FinalNorm.Parameters()...)
-	parameters = append(parameters, model.OutputLayer.Parameters()...)
+	for _, outputParameter := range model.OutputLayer.Parameters() {
+		outputParameter.UseAdamW = true
+		parameters = append(parameters, outputParameter)
+	}
 	return parameters
 }
 
@@ -129,34 +191,68 @@ func OneHotTargets(targetIDs []int, vocabularySize int) vectormath.Matrix {
 	return targets
 }
 
-func (model *Model) Loss(tokenIDs []int) float64 {
+func checkEnoughTokens(functionName string, tokenIDs []int) {
 	if len(tokenIDs) < 2 {
-		panic(fmt.Sprintf("Model.Loss: needs at least 2 tokens, got %d", len(tokenIDs)))
+		panic(fmt.Sprintf("Model.%s: needs at least 2 tokens to learn what comes next, got %d", functionName, len(tokenIDs)))
 	}
-	model.checkTokenIDs(tokenIDs)
+}
+
+func (model *Model) Loss(tokenIDs []int) float64 {
+	checkEnoughTokens("Loss", tokenIDs)
 	scores := model.Forward(tokenIDs[:len(tokenIDs)-1])
 	targets := OneHotTargets(tokenIDs[1:], model.Settings.VocabularySize)
 	return lossfunction.SoftmaxCrossEntropy.Calculate(scores, targets)
 }
 
-func (model *Model) TrainStep(tokenIDs []int, chosenOptimizer optimizer.Optimizer) float64 {
-	if len(tokenIDs) < 2 {
-		panic(fmt.Sprintf("Model.TrainStep: needs at least 2 tokens to learn what comes next, got %d", len(tokenIDs)))
-	}
+func (model *Model) usesMultiTokenPrediction(tokenIDs []int) bool {
+	return model.MultiTokenPredictor != nil && len(tokenIDs) >= 3
+}
+
+func (model *Model) TrainingLoss(tokenIDs []int) float64 {
+	checkEnoughTokens("TrainingLoss", tokenIDs)
 	model.checkTokenIDs(tokenIDs)
-	inputIDs := tokenIDs[:len(tokenIDs)-1]
-	targetIDs := tokenIDs[1:]
+	if !model.usesMultiTokenPrediction(tokenIDs) {
+		return model.Loss(tokenIDs)
+	}
+	loss, _ := model.multiTokenForward(tokenIDs)
+	return loss
+}
 
-	parameters := model.Parameters()
-	parameter.ZeroGradients(parameters)
-
-	scores := model.Forward(inputIDs)
-	targets := OneHotTargets(targetIDs, model.Settings.VocabularySize)
+func (model *Model) ComputeGradients(tokenIDs []int) float64 {
+	checkEnoughTokens("ComputeGradients", tokenIDs)
+	model.checkTokenIDs(tokenIDs)
+	if model.usesMultiTokenPrediction(tokenIDs) {
+		loss, memory := model.multiTokenForward(tokenIDs)
+		model.multiTokenBackward(memory)
+		return loss
+	}
+	scores := model.Forward(tokenIDs[:len(tokenIDs)-1])
+	targets := OneHotTargets(tokenIDs[1:], model.Settings.VocabularySize)
 	loss := lossfunction.SoftmaxCrossEntropy.Calculate(scores, targets)
 	model.Backward(lossfunction.SoftmaxCrossEntropy.Gradient(scores, targets))
-
-	chosenOptimizer.Update(parameters)
 	return loss
+}
+
+func (model *Model) TrainStep(tokenIDs []int, chosenOptimizer optimizer.Optimizer) float64 {
+	parameters := model.Parameters()
+	parameter.ZeroGradients(parameters)
+	loss := model.ComputeGradients(tokenIDs)
+	chosenOptimizer.Update(parameters)
+	model.UpdateExpertBalance()
+	return loss
+}
+
+func (model *Model) UpdateExpertBalance() {
+	for _, block := range model.Blocks {
+		if mixture := block.mixtureOfExperts(); mixture != nil {
+			mixture.UpdateBalance(model.Settings.BalanceUpdateRate)
+		}
+	}
+	if model.MultiTokenPredictor != nil {
+		if mixture := model.MultiTokenPredictor.Block.mixtureOfExperts(); mixture != nil {
+			mixture.UpdateBalance(model.Settings.BalanceUpdateRate)
+		}
+	}
 }
 
 func RandomChunk(tokenIDs []int, length int) []int {

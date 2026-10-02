@@ -23,6 +23,8 @@ func main() {
 	steps := flag.Int("steps", 300, "how many training steps to run")
 	chunkLength := flag.Int("chunk", 48, "how many characters each training step looks at")
 	savePath := flag.String("save", "", "where to save the trained model (doesn't save if empty)")
+	deepSeekStyle := flag.Bool("deepseek", false, "use the DeepSeek-V4 style model: compressed attention, experts, mHC, multi-token prediction")
+	optimizerName := flag.String("optimizer", "adam", "adam, adamw or muon")
 	flag.Parse()
 
 	if *useGPU {
@@ -57,6 +59,9 @@ func main() {
 	settings.CachePrecision = lowprecision.FP4
 	settings.TrainAtCachePrecision = true
 	settings.FeedForwardClampLimit = 10
+	if *deepSeekStyle {
+		settings = transformer.DeepSeekStyleSettings(vocabulary.Size())
+	}
 
 	model, err := transformer.NewModel(settings)
 	if err != nil {
@@ -65,11 +70,22 @@ func main() {
 	fmt.Println("model:", model.Describe())
 	fmt.Printf("text: %d characters, %d different ones\n", len(characters), vocabulary.Size())
 
-	adam := optimizer.NewAdam(0.003)
+	var chosenOptimizer optimizer.Optimizer
+	switch *optimizerName {
+	case "adam":
+		chosenOptimizer = optimizer.NewAdam(0.003)
+	case "adamw":
+		chosenOptimizer = optimizer.NewAdamW(0.003, 0.01)
+	case "muon":
+		chosenOptimizer = optimizer.NewMuon(0.003)
+	default:
+		panic("unknown optimizer " + *optimizerName + ", use adam, adamw or muon")
+	}
+	fmt.Println("optimizer:", *optimizerName)
 	startTime := time.Now()
 	for step := 1; step <= *steps; step++ {
 		chunk := transformer.RandomChunk(tokenIDs, *chunkLength+1)
-		loss := model.TrainStep(chunk, adam)
+		loss := model.TrainStep(chunk, chosenOptimizer)
 		if step%50 == 0 || step == 1 {
 			fmt.Printf("step %4d  loss %.4f  (%s)\n", step, loss, time.Since(startTime).Round(time.Millisecond))
 		}

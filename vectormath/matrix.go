@@ -144,3 +144,55 @@ func OuterProduct(first Vector, second Vector) Matrix {
 	}
 	return result
 }
+
+func StackRows(top Matrix, bottom Matrix) Matrix {
+	if top.Rows > 0 && bottom.Rows > 0 && top.Columns != bottom.Columns {
+		panic(fmt.Sprintf("StackRows: top matrix has %d columns but bottom matrix has %d", top.Columns, bottom.Columns))
+	}
+	columns := top.Columns
+	if top.Rows == 0 {
+		columns = bottom.Columns
+	}
+	result := NewMatrix(top.Rows+bottom.Rows, columns)
+	copy(result.Values, top.Values)
+	copy(result.Values[len(top.Values):], bottom.Values)
+	return result
+}
+
+func SplitRows(matrix Matrix, topRows int) (Matrix, Matrix) {
+	if topRows < 0 || topRows > matrix.Rows {
+		panic(fmt.Sprintf("SplitRows: can't take %d top rows from a matrix with %d rows", topRows, matrix.Rows))
+	}
+	top := NewMatrix(topRows, matrix.Columns)
+	bottom := NewMatrix(matrix.Rows-topRows, matrix.Columns)
+	copy(top.Values, matrix.Values[:topRows*matrix.Columns])
+	copy(bottom.Values, matrix.Values[topRows*matrix.Columns:])
+	return top, bottom
+}
+
+func JoinColumns(left Matrix, right Matrix) Matrix {
+	if left.Rows != right.Rows {
+		panic(fmt.Sprintf("JoinColumns: left matrix has %d rows but right matrix has %d", left.Rows, right.Rows))
+	}
+	result := NewMatrix(left.Rows, left.Columns+right.Columns)
+	for row := 0; row < left.Rows; row++ {
+		resultRow := result.Row(row)
+		copy(resultRow[:left.Columns], left.Row(row))
+		copy(resultRow[left.Columns:], right.Row(row))
+	}
+	return result
+}
+
+func SplitColumns(matrix Matrix, leftColumns int) (Matrix, Matrix) {
+	if leftColumns < 0 || leftColumns > matrix.Columns {
+		panic(fmt.Sprintf("SplitColumns: can't take %d left columns from a matrix with %d columns", leftColumns, matrix.Columns))
+	}
+	left := NewMatrix(matrix.Rows, leftColumns)
+	right := NewMatrix(matrix.Rows, matrix.Columns-leftColumns)
+	for row := 0; row < matrix.Rows; row++ {
+		values := matrix.Row(row)
+		copy(left.Row(row), values[:leftColumns])
+		copy(right.Row(row), values[leftColumns:])
+	}
+	return left, right
+}

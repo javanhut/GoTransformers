@@ -50,13 +50,13 @@ func TransposedTimesMatrix(first Matrix, second Matrix) Matrix {
 type CPUBackend struct{}
 
 func (CPUBackend) Name() string {
-	return fmt.Sprintf("CPU (%d threads)", runtime.NumCPU())
+	return fmt.Sprintf("CPU (%d threads)", runtime.GOMAXPROCS(0))
 }
 
 const workBeforeUsingMoreThreads = 64 * 64 * 64
 
 func splitRowsAcrossThreads(numberOfRows int, workPerRow int, doRows func(firstRow int, lastRow int)) {
-	numberOfThreads := runtime.NumCPU()
+	numberOfThreads := runtime.GOMAXPROCS(0)
 	if numberOfRows*workPerRow < workBeforeUsingMoreThreads || numberOfThreads == 1 || numberOfRows < 2 {
 		doRows(0, numberOfRows)
 		return

@@ -62,9 +62,33 @@ func (embedding *Embedding) Backward(outputGradients vectormath.Matrix) {
 	}
 }
 
+func (embedding *Embedding) TableRows(tokenIDs []int) vectormath.Matrix {
+	rows := vectormath.NewMatrix(len(tokenIDs), embedding.VectorSize())
+	for position, tokenID := range tokenIDs {
+		if tokenID < 0 || tokenID >= embedding.VocabularySize() {
+			panic(fmt.Sprintf("embedding %q: token ID %d at position %d is outside the vocabulary of %d tokens", embedding.Name, tokenID, position, embedding.VocabularySize()))
+		}
+		rows.SetRow(position, embedding.Table.Row(tokenID))
+	}
+	return rows
+}
+
+func (embedding *Embedding) AddGradients(tokenIDs []int, gradients vectormath.Matrix) {
+	if gradients.Rows != len(tokenIDs) || gradients.Columns != embedding.VectorSize() {
+		panic(fmt.Sprintf("embedding %q: got %dx%d gradients for %d tokens of size %d", embedding.Name, gradients.Rows, gradients.Columns, len(tokenIDs), embedding.VectorSize()))
+	}
+	for position, tokenID := range tokenIDs {
+		tokenGradients := embedding.TableGradients.Row(tokenID)
+		positionGradients := gradients.Row(position)
+		for i := range tokenGradients {
+			tokenGradients[i] += positionGradients[i]
+		}
+	}
+}
+
 func (embedding *Embedding) Parameters() []parameter.Parameter {
 	return []parameter.Parameter{
-		{Name: embedding.Name + ".table", Values: embedding.Table.Values, Gradients: embedding.TableGradients.Values},
+		{Name: embedding.Name + ".table", Values: embedding.Table.Values, Gradients: embedding.TableGradients.Values, Rows: embedding.Table.Rows, Columns: embedding.Table.Columns, UseAdamW: true},
 	}
 }
 

@@ -3,6 +3,7 @@ package transformer
 import (
 	"math"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"transformer/attention"
 	"transformer/gradientcheck"
@@ -51,6 +52,55 @@ func testSettings() map[string]Settings {
 	sharingChoices.WindowSize = 4
 	all["2 blocks share keys, values and top-2 choices in a window"] = sharingChoices
 
+	compressedMix := tinySettings()
+	compressedMix.AttentionPattern = []AttentionKind{StandardAttention, CompressedSparseAttention, HeavilyCompressedAttention}
+	compressedMix.CompressionRate = 2
+	compressedMix.HeavyCompressionRate = 3
+	compressedMix.CompressedWindowSize = 2
+	compressedMix.CompressedTopK = 1
+	compressedMix.UseAttentionSink = true
+	compressedMix.NormalizeQueriesAndKeys = true
+	all["standard, compressed sparse and heavily compressed blocks"] = compressedMix
+
+	smallerCache := tinySettings()
+	smallerCache.NumberOfKeyValueHeads = 1
+	smallerCache.ShareKeyAsValue = true
+	smallerCache.RotaryDimensions = 2
+	smallerCache.QueryRank = 3
+	smallerCache.BlocksPerKeyValueGroup = 2
+	all["multi query, key doubles as value, partial rotary, low rank queries, sharing"] = smallerCache
+
+	experts := tinySettings()
+	experts.UseMixtureOfExperts = true
+	experts.NumberOfRoutedExperts = 3
+	experts.ExpertsPerToken = 2
+	experts.ExpertHiddenSize = 6
+	experts.HashRoutedBlocks = 1
+	all["mixture of experts with a hash routed first block"] = experts
+
+	streams := tinySettings()
+	streams.NumberOfResidualStreams = 2
+	all["mHC with 2 streams"] = streams
+
+	multiToken := tinySettings()
+	multiToken.MultiTokenPrediction = true
+	all["multi-token prediction"] = multiToken
+
+	deepSeek := DeepSeekStyleSettings(11)
+	deepSeek.VectorSize = 8
+	deepSeek.NumberOfHeads = 2
+	deepSeek.RotaryDimensions = 2
+	deepSeek.FeedForwardSize = 12
+	deepSeek.ExpertHiddenSize = 6
+	deepSeek.NumberOfRoutedExperts = 3
+	deepSeek.CompressionRate = 2
+	deepSeek.HeavyCompressionRate = 3
+	deepSeek.CompressedWindowSize = 2
+	deepSeek.CompressedTopK = 1
+	deepSeek.WindowSize = 3
+	deepSeek.NumberOfResidualStreams = 2
+	all["DeepSeek style, everything on"] = deepSeek
+
 	fp4 := tinySettings()
 	fp4.CachePrecision = lowprecision.FP4
 	fp4.TrainAtCachePrecision = true
@@ -89,6 +139,7 @@ func TestGeneratingMatchesTraining(t *testing.T) {
 }
 
 func TestBlockGradients(t *testing.T) {
+	tokenIDs := []int{1, 5, 2, 9, 3}
 	for name, settings := range testSettings() {
 		if settings.TrainAtCachePrecision {
 			continue
@@ -97,7 +148,7 @@ func TestBlockGradients(t *testing.T) {
 		forward := func(inputs vectormath.Matrix) vectormath.Matrix {
 			values := inputs
 			for _, block := range model.Blocks {
-				values = block.Forward(values)
+				values = block.Forward(values, tokenIDs)
 			}
 			return values
 		}
@@ -112,7 +163,7 @@ func TestBlockGradients(t *testing.T) {
 		for _, block := range model.Blocks {
 			parameters = append(parameters, block.Parameters()...)
 		}
-		inputs := vectormath.NewRandomMatrix(5, settings.VectorSize, -1, 1)
+		inputs := vectormath.NewRandomMatrix(len(tokenIDs), settings.VectorSize*settings.residualStreams(), -1, 1)
 		for _, problem := range gradientcheck.Compare(forward, backward, parameters, inputs) {
 			t.Errorf("%s: %s", name, problem)
 		}
@@ -120,27 +171,33 @@ func TestBlockGradients(t *testing.T) {
 }
 
 func TestWholeModelGradients(t *testing.T) {
+	multiToken := tinySettings()
+	multiToken.MultiTokenPrediction = true
+	multiToken.NumberOfResidualStreams = 2
+	checkWholeModelGradients(t, "plain", tinySettings())
+	checkWholeModelGradients(t, "multi-token prediction and mHC", multiToken)
+}
+
+func checkWholeModelGradients(t *testing.T, name string, settings Settings) {
 	const stepSize = 1e-6
-	model := newModel(t, tinySettings())
+	model := newModel(t, settings)
 	tokenIDs := []int{1, 5, 2, 9, 3, 1}
 
 	parameters := model.Parameters()
 	parameter.ZeroGradients(parameters)
-	scores := model.Forward(tokenIDs[:len(tokenIDs)-1])
-	targets := OneHotTargets(tokenIDs[1:], model.Settings.VocabularySize)
-	model.Backward(lossGradient(scores, targets))
+	model.ComputeGradients(tokenIDs)
 
 	for _, current := range parameters {
 		for i := 0; i < len(current.Values); i += 7 {
 			original := current.Values[i]
 			current.Values[i] = original + stepSize
-			higher := model.Loss(tokenIDs)
+			higher := model.TrainingLoss(tokenIDs)
 			current.Values[i] = original - stepSize
-			lower := model.Loss(tokenIDs)
+			lower := model.TrainingLoss(tokenIDs)
 			current.Values[i] = original
 			numerical := (higher - lower) / (2 * stepSize)
 			if math.Abs(numerical-current.Gradients[i]) > 1e-5*math.Max(1, math.Abs(numerical)) {
-				t.Errorf("%s[%d]: backward gave %v, finite difference gave %v", current.Name, i, current.Gradients[i], numerical)
+				t.Errorf("%s: %s[%d]: backward gave %v, finite difference gave %v", name, current.Name, i, current.Gradients[i], numerical)
 			}
 		}
 	}
@@ -173,7 +230,7 @@ func TestSaveAndLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Settings != model.Settings {
+	if !reflect.DeepEqual(loaded.Settings, model.Settings) {
 		t.Errorf("loaded settings %+v, saved %+v", loaded.Settings, model.Settings)
 	}
 	tokenIDs := []int{3, 1, 4, 1, 5}
@@ -222,4 +279,46 @@ func TestBadSettings(t *testing.T) {
 
 func lossGradient(scores vectormath.Matrix, targets vectormath.Matrix) vectormath.Matrix {
 	return lossfunction.SoftmaxCrossEntropy.Gradient(scores, targets)
+}
+
+func TestSaveAndLoadGenerationState(t *testing.T) {
+	for name, settings := range testSettings() {
+		model := newModel(t, settings)
+		prompt := []int{3, 1, 4, 1, 5, 9, 2, 6}
+		path := filepath.Join(t.TempDir(), "prompt.cache")
+
+		model.StartGenerating()
+		model.Feed(prompt)
+		if err := model.SaveGenerationState(path); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		straightThrough := model.Feed([]int{5, 3, 5})
+
+		model.StartGenerating()
+		model.Feed([]int{7, 7})
+		if err := model.LoadGenerationState(path); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		afterLoading := model.Feed([]int{5, 3, 5})
+		for i := range straightThrough {
+			if straightThrough[i] != afterLoading[i] {
+				t.Errorf("%s score %d: without saving %v, after loading the cache %v", name, i, straightThrough[i], afterLoading[i])
+				break
+			}
+		}
+	}
+}
+
+func TestGenerationStateRejectsOtherModels(t *testing.T) {
+	model := newModel(t, tinySettings())
+	other := newModel(t, tinySettings())
+	path := filepath.Join(t.TempDir(), "prompt.cache")
+	model.StartGenerating()
+	model.Feed([]int{1, 2, 3})
+	if err := model.SaveGenerationState(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := other.LoadGenerationState(path); err == nil {
+		t.Error("a model with different weights loaded the cache without an error")
+	}
 }

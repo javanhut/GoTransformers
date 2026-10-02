@@ -70,6 +70,37 @@ func sharingChain(windowSize int, topK int) stack {
 	return stack{layers: []*SelfAttention{owner, borrowsKeysAndValues, borrowsChoices}}
 }
 
+func withOptions(options Options) *SelfAttention {
+	options.HideFutureTokens = true
+	return NewSelfAttentionWithOptions("attention", 8, options)
+}
+
+func withSink(layer *SelfAttention) *SelfAttention {
+	for head := range layer.SinkLogits {
+		layer.SinkLogits[head] = vectormath.RandomNumberBetween(-1, 1)
+	}
+	return layer
+}
+
+func everythingChain() stack {
+	owner := withSink(withOptions(Options{
+		NumberOfHeads:           4,
+		NumberOfKeyValueHeads:   2,
+		ShareKeyAsValue:         true,
+		QueryRank:               5,
+		NormalizeQueriesAndKeys: true,
+		UseAttentionSink:        true,
+		UseRotaryPositions:      true,
+		RotaryDimensions:        2,
+		WindowSize:              4,
+		TopK:                    2,
+	}))
+	owner.Name = "owner"
+	borrowsKeysAndValues := withSink(NewBorrowingSelfAttention("borrowsKeysAndValues", owner, BorrowKeysAndValues))
+	borrowsChoices := withSink(NewBorrowingSelfAttention("borrowsChoices", borrowsKeysAndValues, BorrowKeysValuesAndChoices))
+	return stack{layers: []*SelfAttention{owner, borrowsKeysAndValues, borrowsChoices}}
+}
+
 func rotary(layer *SelfAttention) *SelfAttention {
 	layer.UseRotaryPositions = true
 	return layer
@@ -85,8 +116,8 @@ func rotarySharingChain() stack {
 
 func TestRotaryUndoesItself(t *testing.T) {
 	vector := vectormath.Vector{1, 2, 3, 4, 5, 6, 7, 8}
-	rotated := rotateEachHead(vector, 7, 2, 4, rotateForward)
-	back := rotateEachHead(rotated, 7, 2, 4, rotateBackward)
+	rotated := rotateEachHead(vector, 7, 2, 4, 4, rotateForward)
+	back := rotateEachHead(rotated, 7, 2, 4, 4, rotateBackward)
 	for i := range vector {
 		if math.Abs(back[i]-vector[i]) > 1e-12 {
 			t.Errorf("value %d: started %v, rotated and back %v", i, vector[i], back[i])
@@ -100,8 +131,8 @@ func TestRotaryUndoesItself(t *testing.T) {
 func TestRotaryOnlyCaresAboutDistance(t *testing.T) {
 	query := vectormath.Vector{0.3, -1, 0.5, 2}
 	key := vectormath.Vector{1, 0.2, -0.7, 0.4}
-	near := vectormath.DotProduct(rotateEachHead(query, 5, 1, 4, rotateForward), rotateEachHead(key, 3, 1, 4, rotateForward))
-	far := vectormath.DotProduct(rotateEachHead(query, 105, 1, 4, rotateForward), rotateEachHead(key, 103, 1, 4, rotateForward))
+	near := vectormath.DotProduct(rotateEachHead(query, 5, 1, 4, 4, rotateForward), rotateEachHead(key, 3, 1, 4, 4, rotateForward))
+	far := vectormath.DotProduct(rotateEachHead(query, 105, 1, 4, 4, rotateForward), rotateEachHead(key, 103, 1, 4, 4, rotateForward))
 	if math.Abs(near-far) > 1e-9 {
 		t.Errorf("positions 5 and 3 scored %v but positions 105 and 103 scored %v", near, far)
 	}
@@ -116,15 +147,23 @@ func lowPrecisionLayer(precision lowprecision.Precision) *SelfAttention {
 
 func testStacks() map[string]stack {
 	return map[string]stack{
-		"plain":                  single(withSettings(0, 0)),
-		"window 3":               single(withSettings(3, 0)),
-		"top 2":                  single(withSettings(0, 2)),
-		"window 4 top 2":         single(withSettings(4, 2)),
-		"sharing":                sharingChain(0, 0),
-		"sharing window 3 top 2": sharingChain(3, 2),
-		"two heads both ways":    single(NewSelfAttention("attention", 8, 2, false)),
-		"rotary":                 single(rotary(withSettings(0, 0))),
-		"rotary sharing top 2":   rotarySharingChain(),
+		"plain":                           single(withSettings(0, 0)),
+		"window 3":                        single(withSettings(3, 0)),
+		"top 2":                           single(withSettings(0, 2)),
+		"window 4 top 2":                  single(withSettings(4, 2)),
+		"sharing":                         sharingChain(0, 0),
+		"sharing window 3 top 2":          sharingChain(3, 2),
+		"two heads both ways":             single(NewSelfAttention("attention", 8, 2, false)),
+		"rotary":                          single(rotary(withSettings(0, 0))),
+		"rotary sharing top 2":            rotarySharingChain(),
+		"grouped query":                   single(withOptions(Options{NumberOfHeads: 4, NumberOfKeyValueHeads: 2})),
+		"multi query":                     single(withOptions(Options{NumberOfHeads: 4, NumberOfKeyValueHeads: 1})),
+		"shared key value":                single(withOptions(Options{NumberOfHeads: 2, ShareKeyAsValue: true})),
+		"shared key value rotary partial": single(withOptions(Options{NumberOfHeads: 2, ShareKeyAsValue: true, UseRotaryPositions: true, RotaryDimensions: 2})),
+		"query and key norm":              single(withOptions(Options{NumberOfHeads: 2, NormalizeQueriesAndKeys: true, UseRotaryPositions: true})),
+		"attention sink":                  single(withSink(withOptions(Options{NumberOfHeads: 2, UseAttentionSink: true, WindowSize: 3}))),
+		"low rank queries":                single(withOptions(Options{NumberOfHeads: 2, QueryRank: 3})),
+		"everything":                      everythingChain(),
 	}
 }
 
@@ -143,6 +182,8 @@ func TestGeneratingOneTokenAtATimeMatchesTraining(t *testing.T) {
 	stacks["Float32 cache"] = single(lowPrecisionLayer(lowprecision.Float32))
 	stacks["Int8 cache"] = single(lowPrecisionLayer(lowprecision.Int8))
 	stacks["FP4 cache"] = single(lowPrecisionLayer(lowprecision.FP4))
+	fp4Shared := withOptions(Options{NumberOfHeads: 4, NumberOfKeyValueHeads: 1, ShareKeyAsValue: true, UseRotaryPositions: true, CachePrecision: lowprecision.FP4, TrainAtCachePrecision: true})
+	stacks["FP4 multi query shared key value"] = single(fp4Shared)
 
 	for name, layers := range stacks {
 		inputs := vectormath.NewRandomMatrix(10, 8, -1, 1)
@@ -184,6 +225,35 @@ func TestLowerPrecisionCacheIsSmaller(t *testing.T) {
 	}
 	if bytesUsed[lowprecision.FP4]*5 > bytesUsed[lowprecision.Float64] {
 		t.Errorf("FP4 cache used %d bytes, Float64 used %d", bytesUsed[lowprecision.FP4], bytesUsed[lowprecision.Float64])
+	}
+}
+
+func TestSmallerCacheOptions(t *testing.T) {
+	cacheBytes := func(options Options) int {
+		layer := withOptions(options)
+		layer.StartGenerating()
+		for position := 0; position < 10; position++ {
+			layer.ForwardOneToken(vectormath.NewRandomMatrix(1, 8, -1, 1).Row(0))
+		}
+		return layer.CacheBytesUsed()
+	}
+	full := cacheBytes(Options{NumberOfHeads: 4})
+	multiQuery := cacheBytes(Options{NumberOfHeads: 4, NumberOfKeyValueHeads: 1})
+	multiQueryShared := cacheBytes(Options{NumberOfHeads: 4, NumberOfKeyValueHeads: 1, ShareKeyAsValue: true})
+	if multiQuery*4 != full || multiQueryShared*2 != multiQuery {
+		t.Errorf("cache bytes: full %d, multi query %d, multi query sharing key as value %d", full, multiQuery, multiQueryShared)
+	}
+}
+
+func TestAttentionSinkCanIgnoreEverything(t *testing.T) {
+	layer := withOptions(Options{NumberOfHeads: 2, UseAttentionSink: true})
+	for head := range layer.SinkLogits {
+		layer.SinkLogits[head] = 50
+	}
+	layer.Forward(vectormath.NewRandomMatrix(4, 8, -1, 1))
+	_, weights := layer.LookedAt(0, 3)
+	if vectormath.Sum(weights) > 1e-6 {
+		t.Errorf("with a huge sink logit the weights should add up to almost 0, got %v", vectormath.Sum(weights))
 	}
 }
 

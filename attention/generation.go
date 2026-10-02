@@ -21,8 +21,10 @@ func (attention *SelfAttention) StartGenerating() {
 	}
 	state := &generationState{lookedAt: make([]lookedAt, attention.NumberOfHeads)}
 	if attention.SharingMode == OwnKeysAndValues {
-		state.keys = lowprecision.NewRows(attention.CachePrecision, attention.VectorSize())
-		state.values = lowprecision.NewRows(attention.CachePrecision, attention.VectorSize())
+		state.keys = lowprecision.NewRows(attention.CachePrecision, attention.keyValueSize())
+		if !attention.ShareKeyAsValue {
+			state.values = lowprecision.NewRows(attention.CachePrecision, attention.keyValueSize())
+		}
 	}
 	attention.generation = state
 }
@@ -43,6 +45,29 @@ func (attention *SelfAttention) rowsToKeepInCache() int {
 	return largestWindow
 }
 
+func (state *generationState) dropOldestRows(count int) {
+	state.keys.DropOldestRows(count)
+	if state.values != nil {
+		state.values.DropOldestRows(count)
+	}
+	state.firstPosition += count
+}
+
+func (state *generationState) cachedRows() ([]vectormath.Vector, []vectormath.Vector) {
+	cachedKeys := make([]vectormath.Vector, state.keys.NumberOfRows())
+	for row := range cachedKeys {
+		cachedKeys[row] = state.keys.Row(row)
+	}
+	if state.values == nil {
+		return cachedKeys, cachedKeys
+	}
+	cachedValues := make([]vectormath.Vector, state.values.NumberOfRows())
+	for row := range cachedValues {
+		cachedValues[row] = state.values.Row(row)
+	}
+	return cachedKeys, cachedValues
+}
+
 func (attention *SelfAttention) ForwardOneToken(input vectormath.Vector) vectormath.Vector {
 	state := attention.generation
 	if state == nil {
@@ -50,18 +75,18 @@ func (attention *SelfAttention) ForwardOneToken(input vectormath.Vector) vectorm
 	}
 	position := state.tokensSeen
 	inputRow := vectormath.MatrixFromRows([]vectormath.Vector{input})
-	query := attention.rotateOne(attention.QueryLayer.Forward(inputRow).Row(0), position)
+	query := attention.makeQueries(inputRow, position).Row(0)
 
 	if attention.SharingMode == OwnKeysAndValues {
-		state.keys.Append(attention.rotateOne(attention.KeyLayer.Forward(inputRow).Row(0), position))
-		state.values.Append(attention.ValueLayer.Forward(inputRow).Row(0))
+		keys, values := attention.makeKeysAndValues(inputRow, position)
+		state.keys.Append(keys.Row(0))
+		if state.values != nil {
+			state.values.Append(values.Row(0))
+		}
 		state.tokensSeen++
 		rowsToKeep := attention.rowsToKeepInCache()
 		if rowsToKeep > 0 && state.keys.NumberOfRows() > rowsToKeep {
-			extraRows := state.keys.NumberOfRows() - rowsToKeep
-			state.keys.DropOldestRows(extraRows)
-			state.values.DropOldestRows(extraRows)
-			state.firstPosition += extraRows
+			state.dropOldestRows(state.keys.NumberOfRows() - rowsToKeep)
 		}
 	}
 
@@ -79,20 +104,15 @@ func (attention *SelfAttention) ForwardOneToken(input vectormath.Vector) vectorm
 		}
 	}
 
-	cachedKeys := make([]vectormath.Vector, ownerState.keys.NumberOfRows())
-	cachedValues := make([]vectormath.Vector, ownerState.values.NumberOfRows())
-	for row := range cachedKeys {
-		cachedKeys[row] = ownerState.keys.Row(row)
-		cachedValues[row] = ownerState.values.Row(row)
-	}
-
+	cachedKeys, cachedValues := ownerState.cachedRows()
 	combined := vectormath.NewVector(attention.VectorSize())
 	for head := 0; head < attention.NumberOfHeads; head++ {
+		keyValueHead := attention.keyValueHeadFor(head)
 		keyAt := func(otherPosition int) vectormath.Vector {
-			return headSlice(cachedKeys[otherPosition-ownerState.firstPosition], head, attention.HeadSize())
+			return headSlice(cachedKeys[otherPosition-ownerState.firstPosition], keyValueHead, attention.HeadSize())
 		}
 		valueAt := func(otherPosition int) vectormath.Vector {
-			return headSlice(cachedValues[otherPosition-ownerState.firstPosition], head, attention.HeadSize())
+			return headSlice(cachedValues[otherPosition-ownerState.firstPosition], keyValueHead, attention.HeadSize())
 		}
 		headQuery := headSlice(query, head, attention.HeadSize())
 
@@ -107,9 +127,9 @@ func (attention *SelfAttention) ForwardOneToken(input vectormath.Vector) vectorm
 			positions = attention.choosePositions(headQuery, keyAt, first, last)
 		}
 
-		weights, output := attendTo(headQuery, positions, keyAt, valueAt, attention.scale())
-		copy(headSlice(combined, head, attention.HeadSize()), output)
-		state.lookedAt[head] = lookedAt{positions: positions, weights: weights}
+		looked, output := attention.attendTo(headQuery, positions, keyAt, valueAt, head)
+		copy(headSlice(combined, head, attention.HeadSize()), attention.rotateOutput(output, position, rotateBackward))
+		state.lookedAt[head] = looked
 	}
 
 	if attention.SharingMode != OwnKeysAndValues {
@@ -122,5 +142,9 @@ func (attention *SelfAttention) CacheBytesUsed() int {
 	if attention.generation == nil || attention.SharingMode != OwnKeysAndValues {
 		return 0
 	}
-	return attention.generation.keys.BytesUsed() + attention.generation.values.BytesUsed()
+	total := attention.generation.keys.BytesUsed()
+	if attention.generation.values != nil {
+		total += attention.generation.values.BytesUsed()
+	}
+	return total
 }

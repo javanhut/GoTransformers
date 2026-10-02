@@ -11,36 +11,45 @@ const rotateForward = 1.0
 
 const rotateBackward = -1.0
 
-func rotateEachHead(vector vectormath.Vector, position int, numberOfHeads int, headSize int, direction float64) vectormath.Vector {
+func rotateOneHead(headValues vectormath.Vector, position int, rotaryDimensions int, direction float64) {
+	headSize := len(headValues)
+	firstRotated := headSize - rotaryDimensions
+	for pair := 0; pair < rotaryDimensions/2; pair++ {
+		frequency := math.Pow(rotaryBase, -float64(2*pair)/float64(rotaryDimensions))
+		angle := float64(position) * frequency * direction
+		firstIndex := firstRotated + 2*pair
+		first := headValues[firstIndex]
+		second := headValues[firstIndex+1]
+		headValues[firstIndex] = first*math.Cos(angle) - second*math.Sin(angle)
+		headValues[firstIndex+1] = first*math.Sin(angle) + second*math.Cos(angle)
+	}
+}
+
+func rotateEachHead(vector vectormath.Vector, position int, numberOfHeads int, headSize int, rotaryDimensions int, direction float64) vectormath.Vector {
 	rotated := vectormath.CopyVector(vector)
 	for head := 0; head < numberOfHeads; head++ {
-		headValues := headSlice(rotated, head, headSize)
-		for pair := 0; pair < headSize/2; pair++ {
-			frequency := math.Pow(rotaryBase, -float64(2*pair)/float64(headSize))
-			angle := float64(position) * frequency * direction
-			first := headValues[2*pair]
-			second := headValues[2*pair+1]
-			headValues[2*pair] = first*math.Cos(angle) - second*math.Sin(angle)
-			headValues[2*pair+1] = first*math.Sin(angle) + second*math.Cos(angle)
-		}
+		rotateOneHead(headSlice(rotated, head, headSize), position, rotaryDimensions, direction)
 	}
 	return rotated
 }
 
-func (attention *SelfAttention) rotateRows(matrix vectormath.Matrix, direction float64) vectormath.Matrix {
+func (attention *SelfAttention) rotateRows(matrix vectormath.Matrix, numberOfHeads int, firstPosition int, direction float64) vectormath.Matrix {
 	if !attention.UseRotaryPositions {
 		return matrix
 	}
 	rotated := vectormath.NewMatrix(matrix.Rows, matrix.Columns)
-	for position := 0; position < matrix.Rows; position++ {
-		rotated.SetRow(position, rotateEachHead(matrix.Row(position), position, attention.NumberOfHeads, attention.HeadSize(), direction))
+	for row := 0; row < matrix.Rows; row++ {
+		position := firstPosition + row
+		rotated.SetRow(row, rotateEachHead(matrix.Row(row), position, numberOfHeads, attention.HeadSize(), attention.rotaryDimensions(), direction))
 	}
 	return rotated
 }
 
-func (attention *SelfAttention) rotateOne(vector vectormath.Vector, position int) vectormath.Vector {
-	if !attention.UseRotaryPositions {
-		return vector
+func (attention *SelfAttention) rotateOutput(headOutput vectormath.Vector, position int, direction float64) vectormath.Vector {
+	if !attention.UseRotaryPositions || !attention.ShareKeyAsValue {
+		return headOutput
 	}
-	return rotateEachHead(vector, position, attention.NumberOfHeads, attention.HeadSize(), rotateForward)
+	rotated := vectormath.CopyVector(headOutput)
+	rotateOneHead(rotated, position, attention.rotaryDimensions(), direction)
+	return rotated
 }

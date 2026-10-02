@@ -105,7 +105,7 @@ func (layer *Layer) Backward(outputGradients vectormath.Matrix) vectormath.Matri
 
 func (layer *Layer) Parameters() []parameter.Parameter {
 	return []parameter.Parameter{
-		{Name: layer.Name + ".weights", Values: layer.Weights.Values, Gradients: layer.WeightGradients.Values},
+		{Name: layer.Name + ".weights", Values: layer.Weights.Values, Gradients: layer.WeightGradients.Values, Rows: layer.Weights.Rows, Columns: layer.Weights.Columns},
 		{Name: layer.Name + ".biases", Values: layer.Biases, Gradients: layer.BiasGradients},
 	}
 }

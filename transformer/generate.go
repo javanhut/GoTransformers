@@ -2,8 +2,10 @@ package transformer
 
 import (
 	"fmt"
+	"strings"
 	"transformer/activationfunction"
 	"transformer/embedding"
+	"transformer/hyperconnection"
 	"transformer/vectormath"
 )
 
@@ -12,6 +14,7 @@ func (model *Model) StartGenerating() {
 		block.Attention.StartGenerating()
 	}
 	model.generatedPositions = 0
+	model.lastScores = nil
 }
 
 func (model *Model) NextTokenScores(tokenID int) vectormath.Vector {
@@ -20,11 +23,26 @@ func (model *Model) NextTokenScores(tokenID int) vectormath.Vector {
 	if !model.Settings.UseRotaryPositions {
 		value = vectormath.Add(value, embedding.PositionalEncodingAt(model.generatedPositions, model.Settings.VectorSize))
 	}
+	streams := model.Settings.residualStreams()
+	if streams > 1 {
+		value = hyperconnection.ExpandToStreams(oneRow(value), streams).Row(0)
+	}
 	for _, block := range model.Blocks {
-		value = block.ForwardOneToken(value)
+		value = block.ForwardOneToken(value, tokenID)
+	}
+	if streams > 1 {
+		value = hyperconnection.CollapseStreams(oneRow(value), streams).Row(0)
 	}
 	model.generatedPositions++
-	return model.OutputLayer.Forward(model.FinalNorm.Forward(oneRow(value))).Row(0)
+	model.lastScores = model.OutputLayer.Forward(model.FinalNorm.Forward(oneRow(value))).Row(0)
+	return model.lastScores
+}
+
+func (model *Model) Feed(tokenIDs []int) vectormath.Vector {
+	for _, tokenID := range tokenIDs {
+		model.NextTokenScores(tokenID)
+	}
+	return model.lastScores
 }
 
 func PickToken(scores vectormath.Vector, temperature float64) int {
@@ -43,25 +61,26 @@ func PickToken(scores vectormath.Vector, temperature float64) int {
 	return len(probabilities) - 1
 }
 
+func (model *Model) ContinueGenerating(numberOfNewTokens int, temperature float64) []int {
+	if model.lastScores == nil {
+		panic("Model.ContinueGenerating: feed at least 1 token first")
+	}
+	var generatedIDs []int
+	for len(generatedIDs) < numberOfNewTokens {
+		nextID := PickToken(model.lastScores, temperature)
+		generatedIDs = append(generatedIDs, nextID)
+		model.NextTokenScores(nextID)
+	}
+	return generatedIDs
+}
+
 func (model *Model) Generate(promptIDs []int, numberOfNewTokens int, temperature float64) []int {
 	if len(promptIDs) == 0 {
 		panic("Model.Generate: the prompt needs at least 1 token")
 	}
 	model.StartGenerating()
-	var scores vectormath.Vector
-	for _, tokenID := range promptIDs {
-		scores = model.NextTokenScores(tokenID)
-	}
-
-	var generatedIDs []int
-	for len(generatedIDs) < numberOfNewTokens {
-		nextID := PickToken(scores, temperature)
-		generatedIDs = append(generatedIDs, nextID)
-		if len(generatedIDs) < numberOfNewTokens {
-			scores = model.NextTokenScores(nextID)
-		}
-	}
-	return generatedIDs
+	model.Feed(promptIDs)
+	return model.ContinueGenerating(numberOfNewTokens, temperature)
 }
 
 func (model *Model) CacheBytesUsed() int {
@@ -74,12 +93,40 @@ func (model *Model) CacheBytesUsed() int {
 
 func (model *Model) Describe() string {
 	settings := model.Settings
-	positions := "sine-wave positions"
-	if settings.UseRotaryPositions {
-		positions = "rotary positions"
+	var parts []string
+	parts = append(parts, fmt.Sprintf("%d blocks", settings.NumberOfBlocks))
+	parts = append(parts, fmt.Sprintf("vector size %d", settings.VectorSize))
+	parts = append(parts, fmt.Sprintf("%d heads", settings.NumberOfHeads))
+	if settings.NumberOfKeyValueHeads > 0 && settings.NumberOfKeyValueHeads != settings.NumberOfHeads {
+		parts = append(parts, fmt.Sprintf("%d key/value heads", settings.NumberOfKeyValueHeads))
 	}
-	return fmt.Sprintf("%d blocks, vector size %d, %d heads, %d parameters, %s, window %d (full every %d), top-k %d, %d blocks per key/value group (%v), cache %v",
-		settings.NumberOfBlocks, settings.VectorSize, settings.NumberOfHeads, model.NumberOfParameters(), positions,
-		settings.WindowSize, settings.FullAttentionEvery, settings.TopK,
-		settings.BlocksPerKeyValueGroup, settings.GroupSharingMode, settings.CachePrecision)
+	parts = append(parts, fmt.Sprintf("%d parameters", model.NumberOfParameters()))
+	var kinds []string
+	for blockIndex := 0; blockIndex < settings.NumberOfBlocks; blockIndex++ {
+		kinds = append(kinds, string(settings.attentionKindFor(blockIndex)))
+	}
+	parts = append(parts, "attention ["+strings.Join(kinds, " ")+"]")
+	if settings.UseRotaryPositions {
+		parts = append(parts, "rotary positions")
+	}
+	if settings.ShareKeyAsValue {
+		parts = append(parts, "key doubles as value")
+	}
+	if settings.NormalizeQueriesAndKeys {
+		parts = append(parts, "query/key norm")
+	}
+	if settings.UseAttentionSink {
+		parts = append(parts, "attention sink")
+	}
+	if settings.UseMixtureOfExperts {
+		parts = append(parts, fmt.Sprintf("%d shared + %d routed experts (%d per token)", settings.NumberOfSharedExperts, settings.NumberOfRoutedExperts, settings.ExpertsPerToken))
+	}
+	if settings.residualStreams() > 1 {
+		parts = append(parts, fmt.Sprintf("mHC with %d streams", settings.residualStreams()))
+	}
+	if settings.MultiTokenPrediction {
+		parts = append(parts, "multi-token prediction")
+	}
+	parts = append(parts, fmt.Sprintf("cache %v", settings.CachePrecision))
+	return strings.Join(parts, ", ")
 }

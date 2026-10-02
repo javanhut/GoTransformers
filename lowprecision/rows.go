@@ -147,3 +147,57 @@ func (rows *Rows) DropOldestRows(count int) {
 func (rows *Rows) BytesUsed() int {
 	return len(rows.float64Values)*8 + len(rows.float32Values)*4 + len(rows.int8Values) + len(rows.fp4Values) + len(rows.scales)*4
 }
+
+type RowsSnapshot struct {
+	Precision     Precision
+	Width         int
+	NumberOfRows  int
+	Float64Values []float64
+	Float32Values []float32
+	Int8Values    []int8
+	FP4Values     []byte
+	Scales        []float32
+}
+
+func (rows *Rows) Snapshot() RowsSnapshot {
+	return RowsSnapshot{
+		Precision:     rows.Precision,
+		Width:         rows.Width,
+		NumberOfRows:  rows.numberOfRows,
+		Float64Values: append([]float64(nil), rows.float64Values...),
+		Float32Values: append([]float32(nil), rows.float32Values...),
+		Int8Values:    append([]int8(nil), rows.int8Values...),
+		FP4Values:     append([]byte(nil), rows.fp4Values...),
+		Scales:        append([]float32(nil), rows.scales...),
+	}
+}
+
+func RowsFromSnapshot(snapshot RowsSnapshot) (*Rows, error) {
+	if snapshot.Width <= 0 || snapshot.NumberOfRows < 0 {
+		return nil, fmt.Errorf("rows snapshot has width %d and %d rows", snapshot.Width, snapshot.NumberOfRows)
+	}
+	rows := NewRows(snapshot.Precision, snapshot.Width)
+	rows.numberOfRows = snapshot.NumberOfRows
+	rows.float64Values = snapshot.Float64Values
+	rows.float32Values = snapshot.Float32Values
+	rows.int8Values = snapshot.Int8Values
+	rows.fp4Values = snapshot.FP4Values
+	rows.scales = snapshot.Scales
+	expectedBytes := map[Precision]int{
+		Float64: len(rows.float64Values) * 8,
+		Float32: len(rows.float32Values) * 4,
+		Int8:    len(rows.int8Values) + len(rows.scales)*4,
+		FP4:     len(rows.fp4Values) + len(rows.scales)*4,
+	}
+	blocksPerRow := numberOfScaleBlocks(rows.Width)
+	wantedBytes := map[Precision]int{
+		Float64: rows.numberOfRows * rows.Width * 8,
+		Float32: rows.numberOfRows * rows.Width * 4,
+		Int8:    rows.numberOfRows * (rows.Width + blocksPerRow*4),
+		FP4:     rows.numberOfRows * (rows.bytesPerRowForFP4() + blocksPerRow*4),
+	}
+	if expectedBytes[rows.Precision] != wantedBytes[rows.Precision] {
+		return nil, fmt.Errorf("rows snapshot for %d rows of width %d at %v has the wrong amount of data", rows.numberOfRows, rows.Width, rows.Precision)
+	}
+	return rows, nil
+}

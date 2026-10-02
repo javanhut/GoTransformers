@@ -5,6 +5,7 @@ import (
 	"math"
 	"transformer/activationfunction"
 	"transformer/lowprecision"
+	"transformer/normalization"
 	"transformer/parameter"
 	"transformer/perceptron"
 	"transformer/vectormath"
@@ -44,16 +45,36 @@ func (mode *SharingMode) UnmarshalText(text []byte) error {
 	return fmt.Errorf("unknown sharing mode %q", string(text))
 }
 
+type Options struct {
+	NumberOfHeads           int
+	NumberOfKeyValueHeads   int
+	HideFutureTokens        bool
+	ShareKeyAsValue         bool
+	QueryRank               int
+	NormalizeQueriesAndKeys bool
+	UseAttentionSink        bool
+	UseRotaryPositions      bool
+	RotaryDimensions        int
+	WindowSize              int
+	TopK                    int
+	CachePrecision          lowprecision.Precision
+	TrainAtCachePrecision   bool
+}
+
 type lookedAt struct {
-	positions []int
-	weights   []float64
+	positions  []int
+	weights    []float64
+	sinkWeight float64
 }
 
 type SelfAttention struct {
 	Name                  string
 	NumberOfHeads         int
+	NumberOfKeyValueHeads int
 	HideFutureTokens      bool
+	ShareKeyAsValue       bool
 	UseRotaryPositions    bool
+	RotaryDimensions      int
 	WindowSize            int
 	TopK                  int
 	SharingMode           SharingMode
@@ -61,10 +82,15 @@ type SelfAttention struct {
 	CachePrecision        lowprecision.Precision
 	TrainAtCachePrecision bool
 
-	QueryLayer  *perceptron.Layer
-	KeyLayer    *perceptron.Layer
-	ValueLayer  *perceptron.Layer
-	OutputLayer *perceptron.Layer
+	QueryDownLayer     *perceptron.Layer
+	QueryLayer         *perceptron.Layer
+	QueryNorm          *normalization.RMSNorm
+	KeyLayer           *perceptron.Layer
+	KeyNorm            *normalization.RMSNorm
+	ValueLayer         *perceptron.Layer
+	OutputLayer        *perceptron.Layer
+	SinkLogits         vectormath.Vector
+	SinkLogitGradients vectormath.Vector
 
 	borrowers []*SelfAttention
 
@@ -80,18 +106,97 @@ type SelfAttention struct {
 }
 
 func NewSelfAttention(name string, vectorSize int, numberOfHeads int, hideFutureTokens bool) *SelfAttention {
-	if numberOfHeads <= 0 || vectorSize%numberOfHeads != 0 {
-		panic(fmt.Sprintf("NewSelfAttention %q: vector size %d must split evenly into %d heads", name, vectorSize, numberOfHeads))
+	return NewSelfAttentionWithOptions(name, vectorSize, Options{NumberOfHeads: numberOfHeads, HideFutureTokens: hideFutureTokens})
+}
+
+func checkOptions(name string, vectorSize int, options Options) {
+	if options.NumberOfHeads <= 0 || vectorSize%options.NumberOfHeads != 0 {
+		panic(fmt.Sprintf("attention %q: vector size %d must split evenly into %d heads", name, vectorSize, options.NumberOfHeads))
 	}
-	return &SelfAttention{
-		Name:             name,
-		NumberOfHeads:    numberOfHeads,
-		HideFutureTokens: hideFutureTokens,
-		SharingMode:      OwnKeysAndValues,
-		QueryLayer:       perceptron.NewLayer(name+".query", vectorSize, vectorSize, activationfunction.Linear),
-		KeyLayer:         perceptron.NewLayer(name+".key", vectorSize, vectorSize, activationfunction.Linear),
-		ValueLayer:       perceptron.NewLayer(name+".value", vectorSize, vectorSize, activationfunction.Linear),
-		OutputLayer:      perceptron.NewLayer(name+".output", vectorSize, vectorSize, activationfunction.Linear),
+	keyValueHeads := options.NumberOfKeyValueHeads
+	if keyValueHeads == 0 {
+		keyValueHeads = options.NumberOfHeads
+	}
+	if keyValueHeads < 0 || options.NumberOfHeads%keyValueHeads != 0 {
+		panic(fmt.Sprintf("attention %q: %d query heads must split evenly into %d key/value heads", name, options.NumberOfHeads, keyValueHeads))
+	}
+	if options.QueryRank < 0 {
+		panic(fmt.Sprintf("attention %q: QueryRank can't be negative, got %d", name, options.QueryRank))
+	}
+}
+
+func NewSelfAttentionWithOptions(name string, vectorSize int, options Options) *SelfAttention {
+	checkOptions(name, vectorSize, options)
+	keyValueHeads := options.NumberOfKeyValueHeads
+	if keyValueHeads == 0 {
+		keyValueHeads = options.NumberOfHeads
+	}
+	headSize := vectorSize / options.NumberOfHeads
+
+	attention := &SelfAttention{
+		Name:                  name,
+		NumberOfHeads:         options.NumberOfHeads,
+		NumberOfKeyValueHeads: keyValueHeads,
+		HideFutureTokens:      options.HideFutureTokens,
+		ShareKeyAsValue:       options.ShareKeyAsValue,
+		UseRotaryPositions:    options.UseRotaryPositions,
+		RotaryDimensions:      options.RotaryDimensions,
+		WindowSize:            options.WindowSize,
+		TopK:                  options.TopK,
+		SharingMode:           OwnKeysAndValues,
+		CachePrecision:        options.CachePrecision,
+		TrainAtCachePrecision: options.TrainAtCachePrecision,
+	}
+	attention.makeQueryAndOutputParts(vectorSize, options)
+
+	attention.KeyLayer = perceptron.NewLayer(name+".key", vectorSize, keyValueHeads*headSize, activationfunction.Linear)
+	if !options.ShareKeyAsValue {
+		attention.ValueLayer = perceptron.NewLayer(name+".value", vectorSize, keyValueHeads*headSize, activationfunction.Linear)
+	}
+	if options.NormalizeQueriesAndKeys {
+		attention.KeyNorm = normalization.NewRMSNorm(name+".keyNorm", headSize)
+	}
+	return attention
+}
+
+func (attention *SelfAttention) makeQueryAndOutputParts(vectorSize int, options Options) {
+	name := attention.Name
+	headSize := vectorSize / options.NumberOfHeads
+	queryInputSize := vectorSize
+	if options.QueryRank > 0 {
+		attention.QueryDownLayer = perceptron.NewLayer(name+".queryDown", vectorSize, options.QueryRank, activationfunction.Linear)
+		queryInputSize = options.QueryRank
+	}
+	attention.QueryLayer = perceptron.NewLayer(name+".query", queryInputSize, vectorSize, activationfunction.Linear)
+	if options.NormalizeQueriesAndKeys {
+		attention.QueryNorm = normalization.NewRMSNorm(name+".queryNorm", headSize)
+	}
+	if options.UseAttentionSink {
+		attention.SinkLogits = vectormath.NewVector(options.NumberOfHeads)
+		attention.SinkLogitGradients = vectormath.NewVector(options.NumberOfHeads)
+	}
+	attention.OutputLayer = perceptron.NewLayer(name+".output", vectorSize, vectorSize, activationfunction.Linear)
+}
+
+func (attention *SelfAttention) Options() Options {
+	queryRank := 0
+	if attention.QueryDownLayer != nil {
+		queryRank = attention.QueryDownLayer.NumberOfOutputs()
+	}
+	return Options{
+		NumberOfHeads:           attention.NumberOfHeads,
+		NumberOfKeyValueHeads:   attention.NumberOfKeyValueHeads,
+		HideFutureTokens:        attention.HideFutureTokens,
+		ShareKeyAsValue:         attention.ShareKeyAsValue,
+		QueryRank:               queryRank,
+		NormalizeQueriesAndKeys: attention.QueryNorm != nil,
+		UseAttentionSink:        attention.SinkLogits != nil,
+		UseRotaryPositions:      attention.UseRotaryPositions,
+		RotaryDimensions:        attention.RotaryDimensions,
+		WindowSize:              attention.WindowSize,
+		TopK:                    attention.TopK,
+		CachePrecision:          attention.CachePrecision,
+		TrainAtCachePrecision:   attention.TrainAtCachePrecision,
 	}
 }
 
@@ -102,30 +207,48 @@ func NewBorrowingSelfAttention(name string, sharedFrom *SelfAttention, mode Shar
 	if mode != BorrowKeysAndValues && mode != BorrowKeysValuesAndChoices {
 		panic(fmt.Sprintf("NewBorrowingSelfAttention %q: mode must be BorrowKeysAndValues or BorrowKeysValuesAndChoices, got %v", name, mode))
 	}
-	vectorSize := sharedFrom.VectorSize()
+	options := sharedFrom.Options()
 	attention := &SelfAttention{
-		Name:               name,
-		NumberOfHeads:      sharedFrom.NumberOfHeads,
-		HideFutureTokens:   sharedFrom.HideFutureTokens,
-		UseRotaryPositions: sharedFrom.UseRotaryPositions,
-		WindowSize:         sharedFrom.WindowSize,
-		TopK:               sharedFrom.TopK,
-		SharingMode:        mode,
-		SharedFrom:         sharedFrom,
-		QueryLayer:         perceptron.NewLayer(name+".query", vectorSize, vectorSize, activationfunction.Linear),
-		OutputLayer:        perceptron.NewLayer(name+".output", vectorSize, vectorSize, activationfunction.Linear),
+		Name:                  name,
+		NumberOfHeads:         options.NumberOfHeads,
+		NumberOfKeyValueHeads: options.NumberOfKeyValueHeads,
+		HideFutureTokens:      options.HideFutureTokens,
+		ShareKeyAsValue:       options.ShareKeyAsValue,
+		UseRotaryPositions:    options.UseRotaryPositions,
+		RotaryDimensions:      options.RotaryDimensions,
+		WindowSize:            options.WindowSize,
+		TopK:                  options.TopK,
+		SharingMode:           mode,
+		SharedFrom:            sharedFrom,
 	}
+	attention.makeQueryAndOutputParts(sharedFrom.VectorSize(), options)
 	owner := attention.keyValueOwner()
 	owner.borrowers = append(owner.borrowers, attention)
 	return attention
 }
 
 func (attention *SelfAttention) VectorSize() int {
-	return attention.QueryLayer.NumberOfInputs()
+	return attention.OutputLayer.NumberOfOutputs()
 }
 
 func (attention *SelfAttention) HeadSize() int {
 	return attention.VectorSize() / attention.NumberOfHeads
+}
+
+func (attention *SelfAttention) keyValueSize() int {
+	return attention.NumberOfKeyValueHeads * attention.HeadSize()
+}
+
+func (attention *SelfAttention) keyValueHeadFor(queryHead int) int {
+	queryHeadsPerKeyValueHead := attention.NumberOfHeads / attention.NumberOfKeyValueHeads
+	return queryHead / queryHeadsPerKeyValueHead
+}
+
+func (attention *SelfAttention) rotaryDimensions() int {
+	if attention.RotaryDimensions == 0 {
+		return attention.HeadSize()
+	}
+	return attention.RotaryDimensions
 }
 
 func (attention *SelfAttention) keyValueOwner() *SelfAttention {
@@ -148,15 +271,24 @@ func (attention *SelfAttention) checkSetUp() {
 	if attention.NumberOfHeads <= 0 || attention.VectorSize()%attention.NumberOfHeads != 0 {
 		panic(fmt.Sprintf("attention %q: vector size %d must split evenly into %d heads", attention.Name, attention.VectorSize(), attention.NumberOfHeads))
 	}
+	if attention.NumberOfKeyValueHeads <= 0 || attention.NumberOfHeads%attention.NumberOfKeyValueHeads != 0 {
+		panic(fmt.Sprintf("attention %q: %d query heads must split evenly into %d key/value heads", attention.Name, attention.NumberOfHeads, attention.NumberOfKeyValueHeads))
+	}
 	if attention.WindowSize < 0 || attention.TopK < 0 {
 		panic(fmt.Sprintf("attention %q: WindowSize and TopK can't be negative, got %d and %d", attention.Name, attention.WindowSize, attention.TopK))
 	}
-	if attention.UseRotaryPositions && attention.HeadSize()%2 != 0 {
-		panic(fmt.Sprintf("attention %q: rotary positions need an even head size, got %d", attention.Name, attention.HeadSize()))
+	if attention.UseRotaryPositions {
+		rotary := attention.rotaryDimensions()
+		if rotary%2 != 0 || rotary > attention.HeadSize() || rotary < 0 {
+			panic(fmt.Sprintf("attention %q: rotary dimensions must be even and at most the head size %d, got %d", attention.Name, attention.HeadSize(), rotary))
+		}
 	}
 	if attention.SharingMode == OwnKeysAndValues {
-		if attention.KeyLayer == nil || attention.ValueLayer == nil {
+		if attention.KeyLayer == nil || (attention.ValueLayer == nil && !attention.ShareKeyAsValue) {
 			panic(fmt.Sprintf("attention %q: owns its keys and values but has no KeyLayer or ValueLayer", attention.Name))
+		}
+		if attention.KeyLayer.NumberOfOutputs() != attention.keyValueSize() {
+			panic(fmt.Sprintf("attention %q: KeyLayer makes %d values but %d key/value heads need %d", attention.Name, attention.KeyLayer.NumberOfOutputs(), attention.NumberOfKeyValueHeads, attention.keyValueSize()))
 		}
 		return
 	}
@@ -164,8 +296,10 @@ func (attention *SelfAttention) checkSetUp() {
 		panic(fmt.Sprintf("attention %q: is %v but SharedFrom is nil", attention.Name, attention.SharingMode))
 	}
 	owner := attention.keyValueOwner()
-	if owner.VectorSize() != attention.VectorSize() || owner.NumberOfHeads != attention.NumberOfHeads || owner.UseRotaryPositions != attention.UseRotaryPositions {
-		panic(fmt.Sprintf("attention %q: borrows from %q, so both need the same vector size, number of heads and UseRotaryPositions", attention.Name, owner.Name))
+	sameShape := owner.VectorSize() == attention.VectorSize() && owner.NumberOfHeads == attention.NumberOfHeads && owner.NumberOfKeyValueHeads == attention.NumberOfKeyValueHeads
+	samePositions := owner.UseRotaryPositions == attention.UseRotaryPositions && owner.rotaryDimensions() == attention.rotaryDimensions() && owner.ShareKeyAsValue == attention.ShareKeyAsValue
+	if !sameShape || !samePositions {
+		panic(fmt.Sprintf("attention %q: borrows from %q, so both need the same vector size, heads, key/value heads, rotary settings and ShareKeyAsValue", attention.Name, owner.Name))
 	}
 }
 
@@ -175,12 +309,72 @@ func headSlice(vector vectormath.Vector, head int, headSize int) vectormath.Vect
 	return vector[start:end:end]
 }
 
-func (attention *SelfAttention) headPart(matrix vectormath.Matrix, position int, head int) vectormath.Vector {
+func (attention *SelfAttention) queryPart(matrix vectormath.Matrix, position int, head int) vectormath.Vector {
 	return headSlice(matrix.Row(position), head, attention.HeadSize())
+}
+
+func (attention *SelfAttention) keyValuePart(matrix vectormath.Matrix, position int, keyValueHead int) vectormath.Vector {
+	return headSlice(matrix.Row(position), keyValueHead, attention.HeadSize())
 }
 
 func (attention *SelfAttention) scale() float64 {
 	return 1 / math.Sqrt(float64(attention.HeadSize()))
+}
+
+func normalizeEachHead(norm *normalization.RMSNorm, matrix vectormath.Matrix, numberOfHeads int) vectormath.Matrix {
+	if norm == nil {
+		return matrix
+	}
+	headSize := matrix.Columns / numberOfHeads
+	oneHeadPerRow := vectormath.Matrix{Rows: matrix.Rows * numberOfHeads, Columns: headSize, Values: matrix.Values}
+	normalized := norm.Forward(oneHeadPerRow)
+	return vectormath.Matrix{Rows: matrix.Rows, Columns: matrix.Columns, Values: normalized.Values}
+}
+
+func normalizeEachHeadBackward(norm *normalization.RMSNorm, gradients vectormath.Matrix, numberOfHeads int) vectormath.Matrix {
+	if norm == nil {
+		return gradients
+	}
+	headSize := gradients.Columns / numberOfHeads
+	oneHeadPerRow := vectormath.Matrix{Rows: gradients.Rows * numberOfHeads, Columns: headSize, Values: gradients.Values}
+	inputGradients := norm.Backward(oneHeadPerRow)
+	return vectormath.Matrix{Rows: gradients.Rows, Columns: gradients.Columns, Values: inputGradients.Values}
+}
+
+func (attention *SelfAttention) makeQueries(inputs vectormath.Matrix, firstPosition int) vectormath.Matrix {
+	queries := inputs
+	if attention.QueryDownLayer != nil {
+		queries = attention.QueryDownLayer.Forward(queries)
+	}
+	queries = attention.QueryLayer.Forward(queries)
+	queries = normalizeEachHead(attention.QueryNorm, queries, attention.NumberOfHeads)
+	return attention.rotateRows(queries, attention.NumberOfHeads, firstPosition, rotateForward)
+}
+
+func (attention *SelfAttention) makeQueriesBackward(queryGradients vectormath.Matrix) vectormath.Matrix {
+	gradients := attention.rotateRows(queryGradients, attention.NumberOfHeads, 0, rotateBackward)
+	gradients = normalizeEachHeadBackward(attention.QueryNorm, gradients, attention.NumberOfHeads)
+	gradients = attention.QueryLayer.Backward(gradients)
+	if attention.QueryDownLayer != nil {
+		gradients = attention.QueryDownLayer.Backward(gradients)
+	}
+	return gradients
+}
+
+func (attention *SelfAttention) makeKeysAndValues(inputs vectormath.Matrix, firstPosition int) (vectormath.Matrix, vectormath.Matrix) {
+	keys := attention.KeyLayer.Forward(inputs)
+	keys = normalizeEachHead(attention.KeyNorm, keys, attention.NumberOfKeyValueHeads)
+	keys = attention.rotateRows(keys, attention.NumberOfKeyValueHeads, firstPosition, rotateForward)
+	if attention.ShareKeyAsValue {
+		return keys, keys
+	}
+	return keys, attention.ValueLayer.Forward(inputs)
+}
+
+func (attention *SelfAttention) makeKeysBackward(keyGradients vectormath.Matrix) vectormath.Matrix {
+	gradients := attention.rotateRows(keyGradients, attention.NumberOfKeyValueHeads, 0, rotateBackward)
+	gradients = normalizeEachHeadBackward(attention.KeyNorm, gradients, attention.NumberOfKeyValueHeads)
+	return attention.KeyLayer.Backward(gradients)
 }
 
 func (attention *SelfAttention) Forward(inputs vectormath.Matrix) vectormath.Matrix {
@@ -189,19 +383,22 @@ func (attention *SelfAttention) Forward(inputs vectormath.Matrix) vectormath.Mat
 		panic(fmt.Sprintf("attention %q: each token vector has %d values but attention expects %d", attention.Name, inputs.Columns, attention.VectorSize()))
 	}
 	sequenceLength := inputs.Rows
-	queries := attention.rotateRows(attention.QueryLayer.Forward(inputs), rotateForward)
+	queries := attention.makeQueries(inputs, 0)
 
 	if attention.SharingMode == OwnKeysAndValues {
-		keys := attention.rotateRows(attention.KeyLayer.Forward(inputs), rotateForward)
-		values := attention.ValueLayer.Forward(inputs)
+		keys, values := attention.makeKeysAndValues(inputs, 0)
 		if attention.TrainAtCachePrecision {
 			keys = lowprecision.RoundTripMatrix(keys, attention.CachePrecision)
-			values = lowprecision.RoundTripMatrix(values, attention.CachePrecision)
+			if attention.ShareKeyAsValue {
+				values = keys
+			} else {
+				values = lowprecision.RoundTripMatrix(values, attention.CachePrecision)
+			}
 		}
 		attention.lastKeys = keys
 		attention.lastValues = values
-		attention.borrowedKeyGradients = vectormath.NewMatrix(sequenceLength, attention.VectorSize())
-		attention.borrowedValueGradients = vectormath.NewMatrix(sequenceLength, attention.VectorSize())
+		attention.borrowedKeyGradients = vectormath.NewMatrix(sequenceLength, attention.keyValueSize())
+		attention.borrowedValueGradients = vectormath.NewMatrix(sequenceLength, attention.keyValueSize())
 		attention.backwardFinished = false
 	} else {
 		owner := attention.keyValueOwner()
@@ -224,11 +421,16 @@ func (attention *SelfAttention) Forward(inputs vectormath.Matrix) vectormath.Mat
 	lookedAtForHead := make([][]lookedAt, attention.NumberOfHeads)
 	for head := 0; head < attention.NumberOfHeads; head++ {
 		lookedAtForHead[head] = make([]lookedAt, sequenceLength)
-		keyAt := func(position int) vectormath.Vector { return attention.headPart(attention.lastKeys, position, head) }
-		valueAt := func(position int) vectormath.Vector { return attention.headPart(attention.lastValues, position, head) }
+		keyValueHead := attention.keyValueHeadFor(head)
+		keyAt := func(position int) vectormath.Vector {
+			return attention.keyValuePart(attention.lastKeys, position, keyValueHead)
+		}
+		valueAt := func(position int) vectormath.Vector {
+			return attention.keyValuePart(attention.lastValues, position, keyValueHead)
+		}
 
 		for position := 0; position < sequenceLength; position++ {
-			query := attention.headPart(queries, position, head)
+			query := attention.queryPart(queries, position, head)
 
 			var positions []int
 			if choicesSource != nil {
@@ -238,9 +440,9 @@ func (attention *SelfAttention) Forward(inputs vectormath.Matrix) vectormath.Mat
 				positions = attention.choosePositions(query, keyAt, first, last)
 			}
 
-			weights, output := attendTo(query, positions, keyAt, valueAt, attention.scale())
-			copy(attention.headPart(combined, position, head), output)
-			lookedAtForHead[head][position] = lookedAt{positions: positions, weights: weights}
+			looked, output := attention.attendTo(query, positions, keyAt, valueAt, head)
+			copy(attention.queryPart(combined, position, head), attention.rotateOutput(output, position, rotateBackward))
+			lookedAtForHead[head][position] = looked
 		}
 	}
 
@@ -249,21 +451,43 @@ func (attention *SelfAttention) Forward(inputs vectormath.Matrix) vectormath.Mat
 	return attention.OutputLayer.Forward(combined)
 }
 
-func attendTo(query vectormath.Vector, positions []int, keyAt func(int) vectormath.Vector, valueAt func(int) vectormath.Vector, scale float64) ([]float64, vectormath.Vector) {
-	scores := vectormath.NewVector(len(positions))
-	for i, position := range positions {
-		scores[i] = vectormath.DotProduct(query, keyAt(position)) * scale
+func (attention *SelfAttention) attendTo(query vectormath.Vector, positions []int, keyAt func(int) vectormath.Vector, valueAt func(int) vectormath.Vector, head int) (lookedAt, vectormath.Vector) {
+	numberOfScores := len(positions)
+	if attention.SinkLogits != nil {
+		numberOfScores++
 	}
-	weights := activationfunction.Softmax(scores)
+	scores := vectormath.NewVector(numberOfScores)
+	for i, position := range positions {
+		scores[i] = vectormath.DotProduct(query, keyAt(position)) * attention.scale()
+	}
+	if attention.SinkLogits != nil {
+		scores[len(positions)] = attention.SinkLogits[head]
+	}
+	allWeights := activationfunction.Softmax(scores)
+	looked := lookedAt{positions: positions, weights: allWeights[:len(positions)]}
+	if attention.SinkLogits != nil {
+		looked.sinkWeight = allWeights[len(positions)]
+	}
 
 	output := vectormath.NewVector(len(query))
 	for i, position := range positions {
 		value := valueAt(position)
 		for j := range output {
-			output[j] += weights[i] * value[j]
+			output[j] += looked.weights[i] * value[j]
 		}
 	}
-	return weights, output
+	return looked, output
+}
+
+func (attention *SelfAttention) scoreGradients(looked lookedAt, weightGradients []float64, head int) []float64 {
+	if attention.SinkLogits == nil {
+		return activationfunction.SoftmaxBackward(looked.weights, weightGradients)
+	}
+	allWeights := append(vectormath.CopyVector(looked.weights), looked.sinkWeight)
+	allWeightGradients := append(vectormath.CopyVector(weightGradients), 0)
+	allScoreGradients := activationfunction.SoftmaxBackward(allWeights, allWeightGradients)
+	attention.SinkLogitGradients[head] += allScoreGradients[len(looked.weights)]
+	return allScoreGradients[:len(looked.weights)]
 }
 
 func (attention *SelfAttention) Backward(outputGradients vectormath.Matrix) vectormath.Matrix {
@@ -275,32 +499,33 @@ func (attention *SelfAttention) Backward(outputGradients vectormath.Matrix) vect
 
 	combinedGradients := attention.OutputLayer.Backward(outputGradients)
 	queryGradients := vectormath.NewMatrix(sequenceLength, attention.VectorSize())
-	keyGradients := vectormath.NewMatrix(sequenceLength, attention.VectorSize())
-	valueGradients := vectormath.NewMatrix(sequenceLength, attention.VectorSize())
+	keyGradients := vectormath.NewMatrix(sequenceLength, attention.keyValueSize())
+	valueGradients := vectormath.NewMatrix(sequenceLength, attention.keyValueSize())
 
 	for head := 0; head < attention.NumberOfHeads; head++ {
+		keyValueHead := attention.keyValueHeadFor(head)
 		for position := 0; position < sequenceLength; position++ {
 			looked := attention.lastLookedAt[head][position]
-			outputGradient := attention.headPart(combinedGradients, position, head)
+			outputGradient := attention.rotateOutput(attention.queryPart(combinedGradients, position, head), position, rotateForward)
 
 			weightGradients := vectormath.NewVector(len(looked.positions))
 			for i, otherPosition := range looked.positions {
-				otherValue := attention.headPart(attention.lastValues, otherPosition, head)
+				otherValue := attention.keyValuePart(attention.lastValues, otherPosition, keyValueHead)
 				weightGradients[i] = vectormath.DotProduct(outputGradient, otherValue)
 
-				otherValueGradient := attention.headPart(valueGradients, otherPosition, head)
+				otherValueGradient := attention.keyValuePart(valueGradients, otherPosition, keyValueHead)
 				for j := range otherValueGradient {
 					otherValueGradient[j] += looked.weights[i] * outputGradient[j]
 				}
 			}
 
-			scoreGradients := activationfunction.SoftmaxBackward(looked.weights, weightGradients)
+			scoreGradients := attention.scoreGradients(looked, weightGradients, head)
 
-			query := attention.headPart(attention.lastQueries, position, head)
-			queryGradient := attention.headPart(queryGradients, position, head)
+			query := attention.queryPart(attention.lastQueries, position, head)
+			queryGradient := attention.queryPart(queryGradients, position, head)
 			for i, otherPosition := range looked.positions {
-				key := attention.headPart(attention.lastKeys, otherPosition, head)
-				keyGradient := attention.headPart(keyGradients, otherPosition, head)
+				key := attention.keyValuePart(attention.lastKeys, otherPosition, keyValueHead)
+				keyGradient := attention.keyValuePart(keyGradients, otherPosition, keyValueHead)
 				for j := range query {
 					queryGradient[j] += scoreGradients[i] * scale * key[j]
 					keyGradient[j] += scoreGradients[i] * scale * query[j]
@@ -309,14 +534,17 @@ func (attention *SelfAttention) Backward(outputGradients vectormath.Matrix) vect
 		}
 	}
 
-	inputGradients := attention.QueryLayer.Backward(attention.rotateRows(queryGradients, rotateBackward))
+	inputGradients := attention.makeQueriesBackward(queryGradients)
 
 	if attention.SharingMode == OwnKeysAndValues {
 		keyGradients = vectormath.AddMatrices(keyGradients, attention.borrowedKeyGradients)
-		keyGradients = attention.rotateRows(keyGradients, rotateBackward)
 		valueGradients = vectormath.AddMatrices(valueGradients, attention.borrowedValueGradients)
-		inputGradients = vectormath.AddMatrices(inputGradients, attention.KeyLayer.Backward(keyGradients))
-		inputGradients = vectormath.AddMatrices(inputGradients, attention.ValueLayer.Backward(valueGradients))
+		if attention.ShareKeyAsValue {
+			keyGradients = vectormath.AddMatrices(keyGradients, valueGradients)
+		} else {
+			inputGradients = vectormath.AddMatrices(inputGradients, attention.ValueLayer.Backward(valueGradients))
+		}
+		inputGradients = vectormath.AddMatrices(inputGradients, attention.makeKeysBackward(keyGradients))
 		attention.backwardFinished = true
 		return inputGradients
 	}
@@ -348,11 +576,25 @@ func (attention *SelfAttention) LastAttentionWeights(head int) vectormath.Matrix
 
 func (attention *SelfAttention) Parameters() []parameter.Parameter {
 	var parameters []parameter.Parameter
+	if attention.QueryDownLayer != nil {
+		parameters = append(parameters, attention.QueryDownLayer.Parameters()...)
+	}
 	parameters = append(parameters, attention.QueryLayer.Parameters()...)
+	if attention.QueryNorm != nil {
+		parameters = append(parameters, attention.QueryNorm.Parameters()...)
+	}
 	if attention.SharingMode == OwnKeysAndValues {
 		parameters = append(parameters, attention.KeyLayer.Parameters()...)
-		parameters = append(parameters, attention.ValueLayer.Parameters()...)
+		if attention.KeyNorm != nil {
+			parameters = append(parameters, attention.KeyNorm.Parameters()...)
+		}
+		if !attention.ShareKeyAsValue {
+			parameters = append(parameters, attention.ValueLayer.Parameters()...)
+		}
 	}
 	parameters = append(parameters, attention.OutputLayer.Parameters()...)
+	if attention.SinkLogits != nil {
+		parameters = append(parameters, parameter.Parameter{Name: attention.Name + ".sinkLogits", Values: attention.SinkLogits, Gradients: attention.SinkLogitGradients, UseAdamW: true})
+	}
 	return parameters
 }
