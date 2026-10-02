@@ -1,0 +1,125 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer FirstBuffer {
+    float firstValues[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer SecondBuffer {
+    float secondValues[];
+};
+
+layout(std430, set = 0, binding = 2) writeonly buffer ResultBuffer {
+    float resultValues[];
+};
+
+layout(push_constant) uniform Sizes {
+    uint rows;
+    uint inner;
+    uint columns;
+    uint firstIsTransposed;
+    uint secondIsTransposed;
+} sizes;
+
+const uint tileSize = 64;
+const uint stepSize = 16;
+const uint threadsPerSide = 16;
+const uint threadsInGroup = 256;
+const uint valuesPerThreadPerSide = 4;
+const uint loadsPerThread = (tileSize * stepSize) / threadsInGroup;
+
+shared float firstTile[stepSize][tileSize];
+shared float secondTile[stepSize][tileSize];
+
+float readFirst(uint row, uint step) {
+    if (row >= sizes.rows || step >= sizes.inner) {
+        return 0.0;
+    }
+    if (sizes.firstIsTransposed == 0u) {
+        return firstValues[row * sizes.inner + step];
+    }
+    return firstValues[step * sizes.rows + row];
+}
+
+float readSecond(uint step, uint column) {
+    if (step >= sizes.inner || column >= sizes.columns) {
+        return 0.0;
+    }
+    if (sizes.secondIsTransposed == 0u) {
+        return secondValues[step * sizes.columns + column];
+    }
+    return secondValues[column * sizes.inner + step];
+}
+
+void main() {
+    uint threadColumn = gl_LocalInvocationID.x;
+    uint threadRow = gl_LocalInvocationID.y;
+    uint threadNumber = threadRow * threadsPerSide + threadColumn;
+    uint tileFirstRow = gl_WorkGroupID.y * tileSize;
+    uint tileFirstColumn = gl_WorkGroupID.x * tileSize;
+
+    float sums[valuesPerThreadPerSide][valuesPerThreadPerSide];
+    for (uint i = 0; i < valuesPerThreadPerSide; i++) {
+        for (uint j = 0; j < valuesPerThreadPerSide; j++) {
+            sums[i][j] = 0.0;
+        }
+    }
+
+    for (uint stepStart = 0; stepStart < sizes.inner; stepStart += stepSize) {
+        for (uint load = 0; load < loadsPerThread; load++) {
+            uint index = threadNumber + load * threadsInGroup;
+
+            uint firstStep;
+            uint firstRowInTile;
+            if (sizes.firstIsTransposed == 0u) {
+                firstStep = index % stepSize;
+                firstRowInTile = index / stepSize;
+            } else {
+                firstStep = index / tileSize;
+                firstRowInTile = index % tileSize;
+            }
+            firstTile[firstStep][firstRowInTile] = readFirst(tileFirstRow + firstRowInTile, stepStart + firstStep);
+
+            uint secondStep;
+            uint secondColumnInTile;
+            if (sizes.secondIsTransposed == 0u) {
+                secondStep = index / tileSize;
+                secondColumnInTile = index % tileSize;
+            } else {
+                secondStep = index % stepSize;
+                secondColumnInTile = index / stepSize;
+            }
+            secondTile[secondStep][secondColumnInTile] = readSecond(stepStart + secondStep, tileFirstColumn + secondColumnInTile);
+        }
+        barrier();
+
+        for (uint step = 0; step < stepSize; step++) {
+            float firstPart[valuesPerThreadPerSide];
+            float secondPart[valuesPerThreadPerSide];
+            for (uint i = 0; i < valuesPerThreadPerSide; i++) {
+                firstPart[i] = firstTile[step][threadRow + i * threadsPerSide];
+                secondPart[i] = secondTile[step][threadColumn + i * threadsPerSide];
+            }
+            for (uint i = 0; i < valuesPerThreadPerSide; i++) {
+                for (uint j = 0; j < valuesPerThreadPerSide; j++) {
+                    sums[i][j] += firstPart[i] * secondPart[j];
+                }
+            }
+        }
+        barrier();
+    }
+
+    for (uint i = 0; i < valuesPerThreadPerSide; i++) {
+        uint row = tileFirstRow + threadRow + i * threadsPerSide;
+        if (row >= sizes.rows) {
+            continue;
+        }
+        for (uint j = 0; j < valuesPerThreadPerSide; j++) {
+            uint column = tileFirstColumn + threadColumn + j * threadsPerSide;
+            if (column < sizes.columns) {
+                resultValues[row * sizes.columns + column] = sums[i][j];
+            }
+        }
+    }
+}
