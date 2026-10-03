@@ -13,7 +13,6 @@ import (
 	"transformer/lowprecision"
 	"transformer/optimizer"
 	"transformer/pretrained"
-	"transformer/transformer"
 )
 
 var builtInPairs = []datafile.Pair{
@@ -33,7 +32,7 @@ func memoryInUse() float64 {
 
 func main() {
 	modelFolder := flag.String("model", "", "folder with an instruct model (config.json, model.safetensors, tokenizer.json, tokenizer_config.json)")
-	pairsPath := flag.String("pairs", "", "CSV or TSV of question/answer pairs (uses a few built-in ones if empty)")
+	pairsPath := flag.String("pairs", "", "CSV or TSV of question/answer pairs, or a .jsonl file of conversations or pairs (uses a few built-in ones if empty)")
 	precisionName := flag.String("precision", "Int8", "how to store the frozen base weights: Float64, Float32, Int8 or FP4")
 	rank := flag.Int("rank", 8, "adapter rank")
 	alpha := flag.Float64("alpha", 16, "adapter alpha (the adapter's output is scaled by alpha / rank)")
@@ -53,14 +52,36 @@ func main() {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	pairs := builtInPairs
-	if *pairsPath != "" {
+	var conversations [][]chat.Message
+	for _, pair := range builtInPairs {
+		conversations = append(conversations, chat.ConversationFromPair(pair))
+	}
+	if strings.HasSuffix(strings.ToLower(*pairsPath), ".jsonl") {
+		readConversations, err := chat.ReadConversations(*pairsPath)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		conversations = readConversations
+	} else if *pairsPath != "" {
 		readPairs, err := datafile.ReadPairs(*pairsPath, "input", "target")
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
 		}
-		pairs = readPairs
+		conversations = nil
+		for _, pair := range readPairs {
+			conversations = append(conversations, chat.ConversationFromPair(pair))
+		}
+	}
+	firstQuestions := make([]string, 0, len(conversations))
+	for _, messages := range conversations {
+		for _, message := range messages {
+			if message.Role == "user" {
+				firstQuestions = append(firstQuestions, message.Content)
+				break
+			}
+		}
 	}
 
 	model, textTokenizer, err := pretrained.LoadLlamaWithPrecision(*modelFolder, precision)
@@ -73,7 +94,6 @@ func main() {
 		fmt.Println("could not read the chat template:", err)
 		os.Exit(1)
 	}
-	endOfTurnID, _ := textTokenizer.SpecialTokenID(template.EndOfTurnText())
 
 	ask := func(question string) string {
 		conversation := chat.NewConversation(model, textTokenizer, template, "")
@@ -84,16 +104,16 @@ func main() {
 		return strings.TrimSpace(reply)
 	}
 	fmt.Println("before training:")
-	for _, pair := range pairs[:min(2, len(pairs))] {
-		fmt.Printf("  %s -> %s\n", pair.Input, ask(pair.Input))
+	for _, question := range firstQuestions[:min(2, len(firstQuestions))] {
+		fmt.Printf("  %s -> %s\n", question, ask(question))
 	}
 
-	var rehearsalPairs []datafile.Pair
+	trainingConversations := conversations
 	if *rehearse {
 		fmt.Println("\nrehearsal answers from the original model:")
 		for _, question := range rehearsalQuestions {
 			answer := ask(question)
-			rehearsalPairs = append(rehearsalPairs, datafile.Pair{Input: question, Target: answer})
+			trainingConversations = append(trainingConversations, chat.ConversationFromPair(datafile.Pair{Input: question, Target: answer}))
 			fmt.Printf("  %s -> %s\n", question, answer)
 		}
 	}
@@ -107,13 +127,14 @@ func main() {
 	fmt.Printf("\nadded rank %d adapters: %.2fM trainable values (%.2f%% of the model), base weights %v\n",
 		*rank, float64(adapterValues)/1e6, 100*float64(adapterValues)/float64(model.NumberOfParameters()), precision)
 
-	var examples []transformer.Example
+	examples, err := chat.ExamplesFromConversations(trainingConversations, template, textTokenizer)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 	trainingTokens := 0
-	for _, pair := range append(append([]datafile.Pair(nil), pairs...), rehearsalPairs...) {
-		promptIDs := textTokenizer.Encode(template.Format([]chat.Message{{Role: "user", Content: pair.Input}}, true))
-		answerIDs := append(textTokenizer.Encode(pair.Target), endOfTurnID)
-		examples = append(examples, transformer.Example{PromptIDs: promptIDs, AnswerIDs: answerIDs})
-		trainingTokens += len(promptIDs) + len(answerIDs)
+	for _, example := range examples {
+		trainingTokens += len(example.PromptIDs) + len(example.AnswerIDs)
 	}
 
 	adamW := optimizer.NewAdamW(*learningRate, 0)
@@ -128,8 +149,8 @@ func main() {
 	fmt.Printf("memory in use: %.2f GB (gradients: %.1f MB)\n", memoryInUse(), float64(model.GradientBytes())/1e6)
 
 	fmt.Println("\nafter training, the new facts:")
-	for _, pair := range pairs {
-		fmt.Printf("  %s -> %s\n", pair.Input, ask(pair.Input))
+	for _, question := range firstQuestions {
+		fmt.Printf("  %s -> %s\n", question, ask(question))
 	}
 	fmt.Println("after training, questions it never trained on:")
 	for _, question := range checkQuestions {

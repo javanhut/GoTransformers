@@ -20,7 +20,8 @@ import (
 const builtInText = `the quick brown fox jumps over the lazy dog. the lazy dog sleeps in the sun. the quick brown fox runs into the woods. `
 
 func main() {
-	textPath := flag.String("text", "", "text file to learn from (uses a built-in sentence if empty)")
+	textPath := flag.String("text", "", "text or .jsonl file to learn from (uses a built-in sentence if empty)")
+	textField := flag.String("field", "text", "which field of each .jsonl line holds the text")
 	useGPU := flag.Bool("gpu", false, "use a GPU through Vulkan if one is found")
 	steps := flag.Int("steps", 300, "how many training steps to run")
 	chunkLength := flag.Int("chunk", 48, "how many characters each training step looks at")
@@ -46,7 +47,7 @@ func main() {
 
 	text := builtInText
 	if *textPath != "" {
-		fileText, err := datafile.ReadText(*textPath)
+		fileText, err := datafile.ReadTrainingText(*textPath, *textField)
 		if err != nil {
 			panic(err)
 		}

@@ -36,7 +36,8 @@ func characterCoder(text string) textCoder {
 }
 
 func main() {
-	textPath := flag.String("text", "", "text file to learn from (uses a built-in sentence if empty)")
+	textPath := flag.String("text", "", "text or .jsonl file to learn from (uses a built-in sentence if empty)")
+	textField := flag.String("field", "text", "which field of each .jsonl line holds the text")
 	tokenKind := flag.String("tokens", "characters", "characters or bpe")
 	bpeVocabularySize := flag.Int("vocabulary", 4096, "how many tokens the BPE tokenizer learns (only with -tokens bpe)")
 	vectorSize := flag.Int("vector", 256, "vector size")
@@ -55,7 +56,7 @@ func main() {
 
 	text := builtInText
 	if *textPath != "" {
-		fileText, err := datafile.ReadText(*textPath)
+		fileText, err := datafile.ReadTrainingText(*textPath, *textField)
 		if err != nil {
 			fmt.Println("could not read the text:", err)
 			os.Exit(1)

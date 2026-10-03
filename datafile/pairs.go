@@ -27,6 +27,9 @@ func (table Table) Pairs(inputColumn string, targetColumn string) ([]Pair, error
 }
 
 func ReadPairs(path string, inputColumn string, targetColumn string) ([]Pair, error) {
+	if isJSONL(path) {
+		return ReadJSONLPairs(path, inputColumn, targetColumn)
+	}
 	var table Table
 	var err error
 	if strings.ToLower(filepath.Ext(path)) == ".tsv" {

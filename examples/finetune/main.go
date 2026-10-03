@@ -24,9 +24,9 @@ var builtInPairs = []datafile.Pair{
 }
 
 func main() {
-	pairsPath := flag.String("pairs", "", "CSV or TSV file of question/answer pairs (uses a few built-in ones if empty)")
-	inputColumn := flag.String("input", "input", "column with the questions")
-	targetColumn := flag.String("target", "target", "column with the answers")
+	pairsPath := flag.String("pairs", "", "CSV, TSV or .jsonl file of question/answer pairs (uses a few built-in ones if empty)")
+	inputColumn := flag.String("input", "input", "column or JSON field with the questions")
+	targetColumn := flag.String("target", "target", "column or JSON field with the answers")
 	steps := flag.Int("steps", 300, "how many training steps to run")
 	confidenceTarget := flag.Float64("confidence", 0.5, "answer only when the whole answer is at least this likely, otherwise say \"I don't know\"")
 	flag.Parse()
