@@ -1,0 +1,43 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer PartialBuffer {
+    float partialSums[];
+};
+
+layout(std430, set = 0, binding = 1) writeonly buffer ClipBuffer {
+    float clipResult[];
+};
+
+layout(push_constant) uniform Settings {
+    uint numberOfPartials;
+    float maximumNorm;
+} settings;
+
+shared float partials[256];
+
+void main() {
+    uint thread = gl_LocalInvocationID.x;
+    float sum = 0.0;
+    for (uint index = thread; index < settings.numberOfPartials; index += 256u) {
+        sum += partialSums[index];
+    }
+    partials[thread] = sum;
+    barrier();
+    for (uint distance = 128u; distance > 0u; distance /= 2u) {
+        if (thread < distance) {
+            partials[thread] += partials[thread + distance];
+        }
+        barrier();
+    }
+    if (thread == 0u) {
+        float norm = sqrt(partials[0]);
+        float scale = 1.0;
+        if (settings.maximumNorm > 0.0 && norm > settings.maximumNorm) {
+            scale = settings.maximumNorm / (norm + 1e-6);
+        }
+        clipResult[0] = scale;
+        clipResult[1] = norm;
+    }
+}

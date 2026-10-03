@@ -1,13 +1,16 @@
 package parameter
 
+import "github.com/javanhut/GoTransformers/lowprecision"
+
 type Parameter struct {
-	Name            string
-	Values          []float64
-	GradientStorage *[]float64
-	Rows            int
-	Columns         int
-	UseAdamW        bool
-	ReadOnly        bool
+	Name             string
+	Values           []float64
+	CompressedValues *lowprecision.Rows
+	GradientStorage  *[]float64
+	Rows             int
+	Columns          int
+	UseAdamW         bool
+	ReadOnly         bool
 }
 
 func WithGradients(name string, values []float64) Parameter {

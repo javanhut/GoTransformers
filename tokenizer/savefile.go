@@ -8,7 +8,9 @@ import (
 	"strings"
 )
 
-const saveFileFormat = "gotransformers-tokenizer-1"
+const saveFileFormat = "gotransformers-tokenizer-2"
+
+const firstSaveFileFormat = "gotransformers-tokenizer-1"
 
 func (tokenizer *Tokenizer) SaveToFile(path string) error {
 	file, err := os.Create(path)
@@ -17,6 +19,7 @@ func (tokenizer *Tokenizer) SaveToFile(path string) error {
 	}
 	writer := bufio.NewWriter(file)
 	fmt.Fprintln(writer, saveFileFormat)
+	fmt.Fprintf(writer, "kind %s\n", tokenizer.kind)
 	fmt.Fprintf(writer, "addPrefixSpace %v\n", tokenizer.addPrefixSpace)
 	fmt.Fprintf(writer, "useWholeWordsFromVocabulary %v\n", tokenizer.useWholeWordsFromVocabulary)
 	fmt.Fprintf(writer, "steps %d\n", len(tokenizer.steps))
@@ -34,6 +37,9 @@ func (tokenizer *Tokenizer) SaveToFile(path string) error {
 	fmt.Fprintf(writer, "special %d\n", len(tokenizer.specialTokensByLen))
 	for _, content := range tokenizer.specialTokensByLen {
 		fmt.Fprintf(writer, "%d %s\n", tokenizer.specialTokenToID[content], strconv.Quote(content))
+	}
+	if tokenizer.kind != ByteLevelBPE {
+		tokenizer.writeSentencePieceSection(writer)
 	}
 	if err := writer.Flush(); err != nil {
 		file.Close()
@@ -70,6 +76,18 @@ func (reader *lineReader) countAfter(label string) (int, error) {
 		return 0, fmt.Errorf("%s line %d: expected %q followed by a count, got %q", reader.path, reader.lineNumber, label, line)
 	}
 	return count, nil
+}
+
+func (reader *lineReader) textAfter(label string) (string, error) {
+	line, err := reader.next()
+	if err != nil {
+		return "", err
+	}
+	value, found := strings.CutPrefix(line, label+" ")
+	if !found {
+		return "", fmt.Errorf("%s line %d: expected %q followed by a value, got %q", reader.path, reader.lineNumber, label, line)
+	}
+	return value, nil
 }
 
 func (reader *lineReader) flagAfter(label string) (bool, error) {
@@ -123,8 +141,19 @@ func LoadFromFile(path string) (*Tokenizer, error) {
 	if err != nil {
 		return nil, err
 	}
-	if firstLine != saveFileFormat {
+	if firstLine != saveFileFormat && firstLine != firstSaveFileFormat {
 		return nil, fmt.Errorf("%s: not a saved tokenizer (first line is %q)", path, firstLine)
+	}
+	kind := ByteLevelBPE
+	if firstLine == saveFileFormat {
+		kindText, err := reader.textAfter("kind")
+		if err != nil {
+			return nil, err
+		}
+		kind = Kind(kindText)
+		if kind != ByteLevelBPE && kind != SentencePieceBPE && kind != SentencePieceUnigram {
+			return nil, fmt.Errorf("%s line %d: tokenizer kind %q is unknown", path, reader.lineNumber, kindText)
+		}
 	}
 	addPrefixSpace, err := reader.flagAfter("addPrefixSpace")
 	if err != nil {
@@ -196,5 +225,85 @@ func LoadFromFile(path string) (*Tokenizer, error) {
 		}
 		tokenizer.addSpecialTokenWithID(id, content)
 	}
+	tokenizer.kind = kind
+	if kind != ByteLevelBPE {
+		if err := tokenizer.readSentencePieceSection(reader); err != nil {
+			return nil, err
+		}
+	}
 	return tokenizer, nil
+}
+
+func (tokenizer *Tokenizer) sentencePieceFlags() []savedFlag {
+	model := &tokenizer.sentencePiece
+	return []savedFlag{
+		{label: "addDummyPrefix", value: &model.addDummyPrefix},
+		{label: "dummyPrefixOnlyAtStartOfText", value: &model.dummyPrefixOnlyAtStartOfText},
+		{label: "skipDummyPrefixWhenTextStartsWithSpace", value: &model.skipDummyPrefixWhenTextStartsWithSpace},
+		{label: "replaceSpacesWithSpaceSymbol", value: &model.replaceSpacesWithSpaceSymbol},
+		{label: "splitBeforeEachSpaceSymbol", value: &model.splitBeforeEachSpaceSymbol},
+		{label: "removeExtraWhitespace", value: &model.removeExtraWhitespace},
+		{label: "byteFallback", value: &model.byteFallback},
+	}
+}
+
+type savedFlag struct {
+	label string
+	value *bool
+}
+
+func (tokenizer *Tokenizer) writeSentencePieceSection(writer *bufio.Writer) {
+	model := &tokenizer.sentencePiece
+	fmt.Fprintf(writer, "mergeOrder %s\n", model.mergeOrder)
+	for _, flag := range tokenizer.sentencePieceFlags() {
+		fmt.Fprintf(writer, "%s %v\n", flag.label, *flag.value)
+	}
+	fmt.Fprintf(writer, "pieces %d\n", len(model.types))
+	for id := range model.types {
+		fmt.Fprintf(writer, "%s %d\n", strconv.FormatFloat(float64(model.scores[id]), 'g', -1, 32), model.types[id])
+	}
+}
+
+func (tokenizer *Tokenizer) readSentencePieceSection(reader *lineReader) error {
+	model := &tokenizer.sentencePiece
+	mergeOrderText, err := reader.textAfter("mergeOrder")
+	if err != nil {
+		return err
+	}
+	model.mergeOrder = mergeOrder(mergeOrderText)
+	if model.mergeOrder != mergeHighestScoreFirst && model.mergeOrder != mergeEarliestListedFirst {
+		return fmt.Errorf("%s line %d: merge order %q is unknown", reader.path, reader.lineNumber, mergeOrderText)
+	}
+	for _, flag := range tokenizer.sentencePieceFlags() {
+		value, err := reader.flagAfter(flag.label)
+		if err != nil {
+			return err
+		}
+		*flag.value = value
+	}
+	numberOfPieces, err := reader.countAfter("pieces")
+	if err != nil {
+		return err
+	}
+	if numberOfPieces > len(tokenizer.idToToken) {
+		return fmt.Errorf("%s line %d: %d pieces but only %d tokens in the vocabulary", reader.path, reader.lineNumber, numberOfPieces, len(tokenizer.idToToken))
+	}
+	model.scores = make([]float32, numberOfPieces)
+	model.types = make([]pieceType, numberOfPieces)
+	for id := range numberOfPieces {
+		line, err := reader.next()
+		if err != nil {
+			return err
+		}
+		scoreText, typeText, found := strings.Cut(line, " ")
+		score, scoreErr := strconv.ParseFloat(scoreText, 32)
+		typeNumber, typeErr := strconv.Atoi(typeText)
+		if !found || scoreErr != nil || typeErr != nil || typeNumber < int(normalPiece) || typeNumber > int(bytePiece) {
+			return fmt.Errorf("%s line %d: expected a score and a piece type, got %q", reader.path, reader.lineNumber, line)
+		}
+		model.scores[id] = float32(score)
+		model.types[id] = pieceType(typeNumber)
+	}
+	tokenizer.prepareSentencePiece()
+	return nil
 }

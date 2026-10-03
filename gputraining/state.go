@@ -10,8 +10,9 @@ import (
 )
 
 // TrainerState is the GPU trainer's resumable optimizer state: the AdamW step
-// count, each parameter's first- and second-moment buffers (read back from the
-// GPU), and the token embedding's own optimizer state. Model weights are not
+// count and each parameter's first- and second-moment buffers (read back from the
+// GPU), the token table included. Embedding is only read, from files saved when
+// the table was still trained on the CPU. Model weights are not
 // included here; save them separately with Model.Save and reload them before
 // restoring this state.
 //
@@ -35,7 +36,6 @@ func (trainer *Trainer) SaveState() (TrainerState, error) {
 		StepsTaken:              trainer.stepsTaken,
 		AverageGradients:        make(map[string][]float64, len(trainer.parameters)),
 		AverageSquaredGradients: make(map[string][]float64, len(trainer.parameters)),
-		Embedding:               trainer.embeddingOptimizer.SaveState(),
 	}
 	for _, current := range trainer.parameters {
 		averageGradients := make([]float64, len(current.cpuValues))
@@ -59,6 +59,7 @@ func (trainer *Trainer) RestoreState(state TrainerState) error {
 	if trainer.closed {
 		return fmt.Errorf("the trainer is closed")
 	}
+	addOldEmbeddingMoments(&state)
 	for _, current := range trainer.parameters {
 		averageGradients, err := momentsFor(state.AverageGradients, "averageGradients", current)
 		if err != nil {
@@ -74,9 +75,6 @@ func (trainer *Trainer) RestoreState(state TrainerState) error {
 		if err := current.averageSquaredGradients.Upload(averageSquaredGradients); err != nil {
 			return err
 		}
-	}
-	if err := trainer.embeddingOptimizer.RestoreState(state.Embedding); err != nil {
-		return err
 	}
 	trainer.stepsTaken = state.StepsTaken
 	return nil
@@ -127,4 +125,17 @@ func (trainer *Trainer) LoadStateFromFile(path string) error {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	return trainer.RestoreState(state)
+}
+
+func addOldEmbeddingMoments(state *TrainerState) {
+	for name, values := range state.Embedding.Remembered["averageGradients"] {
+		if _, found := state.AverageGradients[name]; !found {
+			state.AverageGradients[name] = values
+		}
+	}
+	for name, values := range state.Embedding.Remembered["averageSquaredGradients"] {
+		if _, found := state.AverageSquaredGradients[name]; !found {
+			state.AverageSquaredGradients[name] = values
+		}
+	}
 }

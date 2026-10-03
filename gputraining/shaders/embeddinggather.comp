@@ -1,0 +1,42 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer TableBuffer {
+    float table[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer TokenIDBuffer {
+    float tokenIDs[];
+};
+
+layout(std430, set = 0, binding = 2) readonly buffer PositionBuffer {
+    float positionVectors[];
+};
+
+layout(std430, set = 0, binding = 3) writeonly buffer OutputBuffer {
+    float outputs[];
+};
+
+layout(push_constant) uniform Settings {
+    uint rows;
+    uint vectorSize;
+    uint sequenceLength;
+    uint addPositions;
+} settings;
+
+void main() {
+    uint index = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 256u + gl_LocalInvocationID.x;
+    if (index >= settings.rows * settings.vectorSize) {
+        return;
+    }
+    uint row = index / settings.vectorSize;
+    uint column = index % settings.vectorSize;
+    uint tokenID = uint(tokenIDs[row]);
+    float value = table[tokenID * settings.vectorSize + column];
+    if (settings.addPositions != 0u) {
+        uint position = row % settings.sequenceLength;
+        value += positionVectors[position * settings.vectorSize + column];
+    }
+    outputs[index] = value;
+}

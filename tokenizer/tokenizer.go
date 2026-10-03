@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"unicode/utf8"
 )
 
@@ -23,6 +24,9 @@ type Tokenizer struct {
 	addPrefixSpace              bool
 	useWholeWordsFromVocabulary bool
 	wordCache                   map[string][]int
+	wordCacheLock               sync.Mutex
+	kind                        Kind
+	sentencePiece               sentencePieceModel
 }
 
 func newEmptyTokenizer(steps []preTokenizerStep) *Tokenizer {
@@ -32,7 +36,12 @@ func newEmptyTokenizer(steps []preTokenizerStep) *Tokenizer {
 		specialTokenToID: map[string]int{},
 		steps:            steps,
 		wordCache:        map[string][]int{},
+		kind:             ByteLevelBPE,
 	}
+}
+
+func (tokenizer *Tokenizer) Kind() Kind {
+	return tokenizer.kind
 }
 
 func (tokenizer *Tokenizer) setToken(id int, token string) {
@@ -61,7 +70,7 @@ func (tokenizer *Tokenizer) addSpecialTokenWithID(id int, content string) {
 	sort.SliceStable(tokenizer.specialTokensByLen, func(i int, j int) bool {
 		return len(tokenizer.specialTokensByLen[i]) > len(tokenizer.specialTokensByLen[j])
 	})
-	tokenizer.wordCache = map[string][]int{}
+	tokenizer.forgetCachedWords()
 }
 
 func (tokenizer *Tokenizer) AddSpecialToken(content string) int {
@@ -78,7 +87,7 @@ func (tokenizer *Tokenizer) AddSpecialToken(content string) int {
 	sort.SliceStable(tokenizer.specialTokensByLen, func(i int, j int) bool {
 		return len(tokenizer.specialTokensByLen[i]) > len(tokenizer.specialTokensByLen[j])
 	})
-	tokenizer.wordCache = map[string][]int{}
+	tokenizer.forgetCachedWords()
 	return id
 }
 
@@ -129,14 +138,36 @@ func (tokenizer *Tokenizer) applyMerges(byteLevelWord string) []string {
 	return symbols
 }
 
+func (tokenizer *Tokenizer) forgetCachedWords() {
+	tokenizer.wordCacheLock.Lock()
+	defer tokenizer.wordCacheLock.Unlock()
+	tokenizer.wordCache = map[string][]int{}
+}
+
+func (tokenizer *Tokenizer) cachedWord(byteLevelWord string) ([]int, bool) {
+	tokenizer.wordCacheLock.Lock()
+	defer tokenizer.wordCacheLock.Unlock()
+	ids, found := tokenizer.wordCache[byteLevelWord]
+	return ids, found
+}
+
+func (tokenizer *Tokenizer) rememberWord(byteLevelWord string, ids []int) {
+	tokenizer.wordCacheLock.Lock()
+	defer tokenizer.wordCacheLock.Unlock()
+	if tokenizer.wordCache == nil || len(tokenizer.wordCache) > 100000 {
+		tokenizer.wordCache = map[string][]int{}
+	}
+	tokenizer.wordCache[byteLevelWord] = ids
+}
+
 func (tokenizer *Tokenizer) encodeWord(byteLevelWord string) []int {
-	if ids, found := tokenizer.wordCache[byteLevelWord]; found {
+	if ids, found := tokenizer.cachedWord(byteLevelWord); found {
 		return ids
 	}
 	var ids []int
 	if tokenizer.useWholeWordsFromVocabulary {
 		if id, found := tokenizer.tokenToID[byteLevelWord]; found {
-			tokenizer.wordCache[byteLevelWord] = []int{id}
+			tokenizer.rememberWord(byteLevelWord, []int{id})
 			return []int{id}
 		}
 	}
@@ -151,10 +182,7 @@ func (tokenizer *Tokenizer) encodeWord(byteLevelWord string) []int {
 			}
 		}
 	}
-	if len(tokenizer.wordCache) > 100000 {
-		tokenizer.wordCache = map[string][]int{}
-	}
-	tokenizer.wordCache[byteLevelWord] = ids
+	tokenizer.rememberWord(byteLevelWord, ids)
 	return ids
 }
 
@@ -195,8 +223,11 @@ func (tokenizer *Tokenizer) hasEveryByte() bool {
 }
 
 func (tokenizer *Tokenizer) Encode(text string) []int {
+	if tokenizer.kind != ByteLevelBPE {
+		return tokenizer.encodeSentencePiece(text)
+	}
 	if !utf8.ValidString(text) && !tokenizer.hasEveryByte() {
-		text = strings.ToValidUTF8(text, "\uFFFD")
+		text = strings.ToValidUTF8(text, "�")
 	}
 	if tokenizer.addPrefixSpace && text != "" && !strings.HasPrefix(text, " ") {
 		text = " " + text
@@ -223,12 +254,19 @@ func (tokenizer *Tokenizer) isSpecial(id int) bool {
 	return found
 }
 
+func (tokenizer *Tokenizer) checkTokenID(id int) {
+	if id < 0 || id >= len(tokenizer.idToToken) {
+		panic(fmt.Sprintf("Decode: token ID %d is outside the vocabulary of %d tokens", id, len(tokenizer.idToToken)))
+	}
+}
+
 func (tokenizer *Tokenizer) Decode(ids []int) string {
+	if tokenizer.kind != ByteLevelBPE {
+		return tokenizer.decodeSentencePiece(ids)
+	}
 	var result []byte
 	for _, id := range ids {
-		if id < 0 || id >= len(tokenizer.idToToken) {
-			panic(fmt.Sprintf("Decode: token ID %d is outside the vocabulary of %d tokens", id, len(tokenizer.idToToken)))
-		}
+		tokenizer.checkTokenID(id)
 		token := tokenizer.idToToken[id]
 		if tokenizer.isSpecial(id) {
 			result = append(result, token...)
@@ -241,4 +279,14 @@ func (tokenizer *Tokenizer) Decode(ids []int) string {
 
 func (tokenizer *Tokenizer) TokenText(id int) string {
 	return tokenizer.Decode([]int{id})
+}
+
+func (tokenizer *Tokenizer) TokenBytes(tokenID int) []byte {
+	if tokenID < 0 || tokenID >= len(tokenizer.idToToken) || tokenizer.isSpecial(tokenID) {
+		return nil
+	}
+	if tokenizer.kind != ByteLevelBPE {
+		return tokenizer.sentencePieceTokenBytes(tokenID)
+	}
+	return byteLevelTextToBytes(tokenizer.idToToken[tokenID])
 }

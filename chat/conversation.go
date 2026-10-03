@@ -13,6 +13,19 @@ type ReplyOptions struct {
 	MaximumNewTokens int
 	Temperature      float64
 	TopProbability   float64
+	Sampling         transformer.SamplingOptions
+	Constraint       transformer.TokenConstraint
+}
+
+func (options ReplyOptions) samplingOptions() transformer.SamplingOptions {
+	sampling := options.Sampling
+	if sampling.Temperature == 0 {
+		sampling.Temperature = options.Temperature
+	}
+	if sampling.TopProbability == 0 {
+		sampling.TopProbability = options.TopProbability
+	}
+	return sampling
 }
 
 func DefaultReplyOptions() ReplyOptions {
@@ -65,13 +78,17 @@ func (conversation *Conversation) Reply(userText string, options ReplyOptions, o
 
 	conversation.Messages = append(conversation.Messages, Message{Role: "user", Content: userText})
 	scores := conversation.feedNewText()
+	sampler := conversation.newSampler(options, endOfTurnID)
 
 	var replyIDs []int
 	shownText := ""
 	for len(replyIDs) < options.MaximumNewTokens {
-		nextID := transformer.PickTokenFromTop(scores, options.Temperature, options.TopProbability)
-		if nextID == endOfTurnID {
+		nextID, found := sampler.PickToken(scores)
+		if !found || nextID == endOfTurnID {
 			break
+		}
+		if err := sampler.AcceptToken(nextID); err != nil {
+			return "", err
 		}
 		replyIDs = append(replyIDs, nextID)
 		scores = conversation.Model.NextTokenScores(nextID)
@@ -88,4 +105,16 @@ func (conversation *Conversation) Reply(userText string, options ReplyOptions, o
 	conversation.Messages = append(conversation.Messages, Message{Role: "assistant", Content: replyText})
 	conversation.fedText += replyText + conversation.Template.EndOfTurnText()
 	return replyText, nil
+}
+
+func (conversation *Conversation) newSampler(options ReplyOptions, endOfTurnID int) *transformer.Sampler {
+	sampler := transformer.NewSampler(options.samplingOptions(), options.Constraint)
+	sampler.StopTokenIDs = []int{endOfTurnID}
+	if options.Constraint != nil {
+		options.Constraint.Restart()
+	}
+	if options.Sampling.PenalizePrompt {
+		sampler.RememberPrompt(conversation.Tokenizer.Encode(conversation.fedText))
+	}
+	return sampler
 }

@@ -12,6 +12,10 @@ func settingsPath(path string) string {
 }
 
 func (model *Model) Save(path string) error {
+	return model.SaveWithPrecision(path, weightfile.Float64)
+}
+
+func (model *Model) SaveWithPrecision(path string, precision weightfile.StoragePrecision) error {
 	settingsText, err := json.MarshalIndent(model.Settings, "", "  ")
 	if err != nil {
 		return err
@@ -19,7 +23,7 @@ func (model *Model) Save(path string) error {
 	if err := os.WriteFile(settingsPath(path), settingsText, 0o644); err != nil {
 		return err
 	}
-	return weightfile.SaveBinary(path, model.Parameters())
+	return weightfile.SaveBinaryWithPrecision(path, model.parametersToSave(), precision)
 }
 
 func LoadModel(path string) (*Model, error) {
@@ -35,11 +39,11 @@ func LoadModel(path string) (*Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	savedValues, err := weightfile.ReadBinary(path)
+	savedValues, savedCompressedValues, err := weightfile.ReadBinaryKeepingCompressed(path)
 	if err != nil {
 		return nil, err
 	}
-	if err := model.SetWeights(savedValues); err != nil {
+	if err := model.SetWeightsAndCompressedWeights(savedValues, savedCompressedValues); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return model, nil

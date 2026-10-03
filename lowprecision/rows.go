@@ -173,6 +173,9 @@ func RowsFromSnapshot(snapshot RowsSnapshot) (*Rows, error) {
 	if snapshot.Width <= 0 || snapshot.NumberOfRows < 0 {
 		return nil, fmt.Errorf("rows snapshot has width %d and %d rows", snapshot.Width, snapshot.NumberOfRows)
 	}
+	if snapshot.Precision < Float64 || snapshot.Precision > FP4 {
+		return nil, fmt.Errorf("rows snapshot has an unknown precision %v", snapshot.Precision)
+	}
 	rows := NewRows(snapshot.Precision, snapshot.Width)
 	rows.numberOfRows = snapshot.NumberOfRows
 	rows.float64Values = snapshot.Float64Values
@@ -318,4 +321,12 @@ func (rows *Rows) AddScaledRowTo(row int, scale float64, target vectormath.Vecto
 			target[i] += scale * blockScale * fp4SignedValues[code]
 		}
 	}
+}
+
+func (rows *Rows) AllValues() []float64 {
+	values := make([]float64, rows.numberOfRows*rows.Width)
+	for row := 0; row < rows.numberOfRows; row++ {
+		copy(values[row*rows.Width:(row+1)*rows.Width], rows.Row(row))
+	}
+	return values
 }

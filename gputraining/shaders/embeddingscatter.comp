@@ -1,0 +1,46 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer RowGradientBuffer {
+    float rowGradients[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer UniqueTokenBuffer {
+    float uniqueTokenIDs[];
+};
+
+layout(std430, set = 0, binding = 2) readonly buffer RowStartBuffer {
+    float rowStarts[];
+};
+
+layout(std430, set = 0, binding = 3) readonly buffer SortedRowBuffer {
+    float sortedRows[];
+};
+
+layout(std430, set = 0, binding = 4) buffer TableGradientBuffer {
+    float tableGradients[];
+};
+
+layout(push_constant) uniform Settings {
+    uint numberOfUniqueTokens;
+    uint vectorSize;
+} settings;
+
+void main() {
+    uint index = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 256u + gl_LocalInvocationID.x;
+    if (index >= settings.numberOfUniqueTokens * settings.vectorSize) {
+        return;
+    }
+    uint uniqueIndex = index / settings.vectorSize;
+    uint column = index % settings.vectorSize;
+    uint tokenID = uint(uniqueTokenIDs[uniqueIndex]);
+    uint firstRow = uint(rowStarts[uniqueIndex]);
+    uint lastRow = uint(rowStarts[uniqueIndex + 1u]);
+    float sum = 0.0;
+    for (uint place = firstRow; place < lastRow; place++) {
+        uint row = uint(sortedRows[place]);
+        sum += rowGradients[row * settings.vectorSize + column];
+    }
+    tableGradients[tokenID * settings.vectorSize + column] += sum;
+}

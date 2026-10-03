@@ -399,6 +399,7 @@ func TestAdamWMatchesOptimizer(t *testing.T) {
 	gradientBuffer := test.emptyBuffer(count)
 	averageBuffer := test.emptyBuffer(count)
 	squaredBuffer := test.emptyBuffer(count)
+	clipBuffer := test.bufferWith([]float64{1, 0})
 	for step := 1; step <= 3; step++ {
 		gradients := randomValues(count, -1, 1)
 		copy(matrix.Gradients(), gradients)
@@ -415,7 +416,7 @@ func TestAdamWMatchesOptimizer(t *testing.T) {
 				averageGradientCorrection:        1 - math.Pow(adamW.MomentumDecay, float64(step)),
 				averageSquaredGradientCorrection: 1 - math.Pow(adamW.SquaredGradientDecay, float64(step)),
 			}
-			test.kernels.adamWUpdate(recorder, valueBuffer, gradientBuffer, averageBuffer, squaredBuffer, count, stepSettings, 1-adamW.LearningRate*adamW.WeightDecay)
+			test.kernels.adamWUpdate(recorder, valueBuffer, gradientBuffer, averageBuffer, squaredBuffer, clipBuffer, count, stepSettings, 1-adamW.LearningRate*adamW.WeightDecay)
 		})
 	}
 	test.expectClose("values after 3 AdamW steps", test.download(valueBuffer), cpuValues, 1e-5)

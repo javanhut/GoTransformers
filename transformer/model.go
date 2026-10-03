@@ -40,6 +40,9 @@ func NewModel(settings Settings) (*Model, error) {
 		FinalNorm:      normalization.NewRMSNorm("finalNorm", settings.VectorSize),
 		OutputLayer:    perceptron.NewLayer("output", settings.VectorSize, settings.VocabularySize, activationfunction.Linear),
 	}
+	if settings.TieOutputToEmbedding {
+		model.tieOutputToEmbedding()
+	}
 	if settings.WeightPrecision != lowprecision.Float64 {
 		model.TokenEmbedding.CompressTable(settings.WeightPrecision)
 		model.OutputLayer.CompressWeights(settings.WeightPrecision)
@@ -185,6 +188,7 @@ func (model *Model) Forward(tokenIDs []int) vectormath.Matrix {
 
 func (model *Model) Backward(scoreGradients vectormath.Matrix) {
 	model.hiddenStatesBackward(model.FinalNorm.Backward(model.OutputLayer.Backward(scoreGradients)))
+	model.addTiedOutputGradientsToEmbedding()
 }
 
 func (model *Model) Parameters() []parameter.Parameter {
@@ -198,6 +202,9 @@ func (model *Model) Parameters() []parameter.Parameter {
 	}
 	parameters = append(parameters, model.FinalNorm.Parameters()...)
 	for _, outputParameter := range model.OutputLayer.Parameters() {
+		if model.Settings.TieOutputToEmbedding && outputParameter.Name == model.OutputLayer.Name+".weights" {
+			continue
+		}
 		outputParameter.UseAdamW = true
 		parameters = append(parameters, outputParameter)
 	}
@@ -247,4 +254,31 @@ func RandomChunk(tokenIDs []int, length int) []int {
 	}
 	start := min(int(vectormath.RandomNumberBetween(0, float64(len(tokenIDs)-length+1))), len(tokenIDs)-length)
 	return tokenIDs[start : start+length]
+}
+
+func (model *Model) tieOutputToEmbedding() {
+	model.OutputLayer.Weights = model.TokenEmbedding.Table
+	model.OutputLayer.WeightGradients = nil
+}
+
+func (model *Model) addTiedOutputGradientsToEmbedding() {
+	if !model.Settings.TieOutputToEmbedding {
+		return
+	}
+	outputLayer := model.OutputLayer
+	tokenEmbedding := model.TokenEmbedding
+	if len(outputLayer.WeightGradients) == 0 {
+		return
+	}
+	if !tokenEmbedding.Frozen && !tokenEmbedding.IsCompressed() {
+		if len(tokenEmbedding.TableGradients) != len(outputLayer.WeightGradients) {
+			tokenEmbedding.TableGradients = make([]float64, len(outputLayer.WeightGradients))
+		}
+		for i, gradient := range outputLayer.WeightGradients {
+			tokenEmbedding.TableGradients[i] += gradient
+		}
+	}
+	for i := range outputLayer.WeightGradients {
+		outputLayer.WeightGradients[i] = 0
+	}
 }

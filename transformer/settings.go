@@ -65,6 +65,8 @@ type Settings struct {
 	MultiTokenPrediction bool
 	MultiTokenLossWeight float64
 
+	TieOutputToEmbedding bool
+
 	AdapterRank  int
 	AdapterAlpha float64
 

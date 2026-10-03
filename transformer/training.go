@@ -90,6 +90,7 @@ func (model *Model) lossAndGradients(tokenIDs []int, firstCountedToken int, comp
 		loss, memory := model.multiTokenForward(tokenIDs, firstCountedToken)
 		if computeGradients {
 			model.multiTokenBackward(memory)
+			model.addTiedOutputGradientsToEmbedding()
 		}
 		return loss
 	}
@@ -178,23 +179,31 @@ func scaleGradients(parameters []parameter.Parameter, factor float64) {
 	}
 }
 
-func (model *Model) TrainOnExamples(examples []Example, chosenOptimizer optimizer.Optimizer) float64 {
+func (model *Model) checkCanTrain(functionName string, examples []Example) {
 	if len(examples) == 0 {
-		panic("Model.TrainOnExamples: no examples given")
+		panic(functionName + ": no examples given")
 	}
 	if model.IsCompressed() && model.Settings.AdapterRank == 0 {
-		panic("Model.TrainOnExamples: the weights are compressed for running the model, call DecompressWeights before training, or AddLowRankAdapters to train adapters around them")
+		panic(functionName + ": the weights are compressed for running the model, call DecompressWeights before training, or AddLowRankAdapters to train adapters around them")
 	}
+}
+
+func (model *Model) computeBatchGradients(examples []Example) float64 {
 	parameter.ZeroGradients(model.Parameters())
 	totalLoss := 0.0
 	for _, example := range examples {
 		totalLoss += model.ComputeAnswerGradients(example)
 	}
-	trainable := model.TrainableParameters()
-	scaleGradients(trainable, 1/float64(len(examples)))
-	chosenOptimizer.Update(trainable)
-	model.UpdateExpertBalance()
+	scaleGradients(model.TrainableParameters(), 1/float64(len(examples)))
 	return totalLoss / float64(len(examples))
+}
+
+func (model *Model) TrainOnExamples(examples []Example, chosenOptimizer optimizer.Optimizer) float64 {
+	model.checkCanTrain("Model.TrainOnExamples", examples)
+	loss := model.computeBatchGradients(examples)
+	chosenOptimizer.Update(model.TrainableParameters())
+	model.UpdateExpertBalance()
+	return loss
 }
 
 func (model *Model) TrainBatch(sequences [][]int, chosenOptimizer optimizer.Optimizer) float64 {

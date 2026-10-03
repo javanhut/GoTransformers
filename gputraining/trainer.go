@@ -7,12 +7,12 @@ import (
 	"github.com/javanhut/GoTransformers/gpu"
 	"github.com/javanhut/GoTransformers/lowprecision"
 	"github.com/javanhut/GoTransformers/optimizer"
-	"github.com/javanhut/GoTransformers/parameter"
 	"github.com/javanhut/GoTransformers/perceptron"
 	"github.com/javanhut/GoTransformers/transformer"
 	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"slices"
+	"sort"
 	"strings"
 )
 
@@ -22,6 +22,8 @@ type TrainerOptions struct {
 	MomentumDecay        float64
 	SquaredGradientDecay float64
 	Epsilon              float64
+	Schedule             optimizer.LearningRateSchedule
+	MaximumGradientNorm  float64
 }
 
 func DefaultTrainerOptions(learningRate float64, weightDecay float64) TrainerOptions {
@@ -33,6 +35,16 @@ func DefaultTrainerOptions(learningRate float64, weightDecay float64) TrainerOpt
 		SquaredGradientDecay: reference.SquaredGradientDecay,
 		Epsilon:              reference.Epsilon,
 	}
+}
+
+func (options TrainerOptions) Check() error {
+	if options.LearningRate <= 0 {
+		return fmt.Errorf("LearningRate must be above 0, got %v", options.LearningRate)
+	}
+	if options.MaximumGradientNorm < 0 {
+		return fmt.Errorf("MaximumGradientNorm can't be negative (0 means no clipping), got %v", options.MaximumGradientNorm)
+	}
+	return options.Schedule.Check()
 }
 
 type parameterOnGPU struct {
@@ -106,6 +118,13 @@ type sharedBuffers struct {
 	hiddenGradients            *gpu.Buffer
 	gateGradients              *gpu.Buffer
 	upGradients                *gpu.Buffer
+	tokenIDs                   *gpu.Buffer
+	uniqueTokenIDs             *gpu.Buffer
+	rowStarts                  *gpu.Buffer
+	sortedRows                 *gpu.Buffer
+	droppedGradients           *gpu.Buffer
+	droppedProbabilities       *gpu.Buffer
+	positionVectors            *gpu.Buffer
 }
 
 type Trainer struct {
@@ -115,25 +134,31 @@ type Trainer struct {
 	model            *transformer.Model
 	kernels          *kernels
 	recorder         *gpu.Recorder
+	tokenTable       *parameterOnGPU
 	blocks           []blockOnGPU
 	finalNorm        *parameterOnGPU
 	finalNormEpsilon float64
 	outputLayer      layerOnGPU
 	parameters       []*parameterOnGPU
 
-	embeddingOptimizer *optimizer.AdamW
-	stepsTaken         int
+	partialSums      *gpu.Buffer
+	clipResult       *gpu.Buffer
+	stepsTaken       int
+	lastGradientNorm float64
 
-	vectorSize      int
-	numberOfHeads   int
-	keyValueHeads   int
-	headSize        int
-	feedForwardSize int
-	vocabularySize  int
-	clampLimit      float64
-	useRotary       bool
-	queryRotary     rotarySetup
-	keyRotary       rotarySetup
+	vectorSize       int
+	numberOfHeads    int
+	keyValueHeads    int
+	headSize         int
+	feedForwardSize  int
+	vocabularySize   int
+	clampLimit       float64
+	useRotary        bool
+	queryRotary      rotarySetup
+	keyRotary        rotarySetup
+	residualDropout  float64
+	attentionDropout float64
+	stepSeed         uint32
 
 	capacityRows      int
 	capacityLength    int
@@ -168,8 +193,6 @@ func unsupportedFeatures(model *transformer.Model) []string {
 	add(settings.MultiTokenPrediction, "MultiTokenPrediction")
 	add(settings.WeightPrecision != lowprecision.Float64 || model.IsCompressed(), "compressed weights")
 	add(settings.AdapterRank != 0 || len(model.AdapterParameters()) > 0, "low-rank adapters")
-	add(settings.ResidualDropout > 0, "ResidualDropout")
-	add(settings.AttentionDropout > 0, "AttentionDropout")
 	add(settings.AdapterDropout > 0, "AdapterDropout")
 	for blockIndex, block := range model.Blocks {
 		selfAttention, isSelfAttention := block.Attention.(*attention.SelfAttention)
@@ -188,8 +211,8 @@ func NewTrainer(device *gpu.Device, model *transformer.Model, options TrainerOpt
 	if problems := unsupportedFeatures(model); len(problems) > 0 {
 		return nil, fmt.Errorf("GPU training doesn't support these settings yet: %s", strings.Join(problems, ", "))
 	}
-	if options.LearningRate <= 0 {
-		return nil, fmt.Errorf("LearningRate must be above 0, got %v", options.LearningRate)
+	if err := options.Check(); err != nil {
+		return nil, err
 	}
 	loaded, err := loadKernels(device)
 	if err != nil {
@@ -203,19 +226,21 @@ func NewTrainer(device *gpu.Device, model *transformer.Model, options TrainerOpt
 	settings := model.Settings
 	firstAttention := model.Blocks[0].Attention.(*attention.SelfAttention)
 	trainer := &Trainer{
-		Options:         options,
-		device:          device,
-		model:           model,
-		kernels:         loaded,
-		recorder:        recorder,
-		vectorSize:      settings.VectorSize,
-		numberOfHeads:   firstAttention.NumberOfHeads,
-		keyValueHeads:   firstAttention.NumberOfKeyValueHeads,
-		headSize:        firstAttention.HeadSize(),
-		feedForwardSize: model.Blocks[0].FeedForward.Layers()[0].NumberOfOutputs(),
-		vocabularySize:  settings.VocabularySize,
-		clampLimit:      settings.FeedForwardClampLimit,
-		useRotary:       firstAttention.UseRotaryPositions,
+		Options:          options,
+		device:           device,
+		model:            model,
+		kernels:          loaded,
+		recorder:         recorder,
+		vectorSize:       settings.VectorSize,
+		numberOfHeads:    firstAttention.NumberOfHeads,
+		keyValueHeads:    firstAttention.NumberOfKeyValueHeads,
+		headSize:         firstAttention.HeadSize(),
+		feedForwardSize:  model.Blocks[0].FeedForward.Layers()[0].NumberOfOutputs(),
+		vocabularySize:   settings.VocabularySize,
+		clampLimit:       settings.FeedForwardClampLimit,
+		useRotary:        firstAttention.UseRotaryPositions,
+		residualDropout:  settings.ResidualDropout,
+		attentionDropout: settings.AttentionDropout,
 	}
 	if trainer.useRotary {
 		rotaryDimensions := firstAttention.RotaryDimensions
@@ -230,12 +255,12 @@ func NewTrainer(device *gpu.Device, model *transformer.Model, options TrainerOpt
 		trainer.keyRotary = trainer.queryRotary
 		trainer.keyRotary.numberOfHeads = trainer.keyValueHeads
 	}
-	trainer.embeddingOptimizer = optimizer.NewAdamW(options.LearningRate, options.WeightDecay)
-	trainer.embeddingOptimizer.MomentumDecay = options.MomentumDecay
-	trainer.embeddingOptimizer.SquaredGradientDecay = options.SquaredGradientDecay
-	trainer.embeddingOptimizer.Epsilon = options.Epsilon
 
 	if err := trainer.uploadModel(); err != nil {
+		trainer.Close()
+		return nil, err
+	}
+	if err := trainer.makeClippingBuffers(); err != nil {
 		trainer.Close()
 		return nil, err
 	}
@@ -286,13 +311,29 @@ func (trainer *Trainer) newLayer(layer *perceptron.Layer) (layerOnGPU, error) {
 	return layerOnGPU{numberOfInputs: layer.NumberOfInputs(), numberOfOutputs: layer.NumberOfOutputs(), weights: weights, biases: biases}, nil
 }
 
+func (trainer *Trainer) newLayerTiedToTokenTable(layer *perceptron.Layer) (layerOnGPU, error) {
+	biases, err := trainer.newParameter(layer.Name+".biases", layer.Biases, false)
+	if err != nil {
+		return layerOnGPU{}, err
+	}
+	return layerOnGPU{numberOfInputs: layer.NumberOfInputs(), numberOfOutputs: layer.NumberOfOutputs(), weights: trainer.tokenTable, biases: biases}, nil
+}
+
+func (trainer *Trainer) isTied() bool {
+	return trainer.model.Settings.TieOutputToEmbedding
+}
+
 func (trainer *Trainer) uploadModel() error {
 	model := trainer.model
+	tokenEmbedding := model.TokenEmbedding
+	var err error
+	if trainer.tokenTable, err = trainer.newParameter(tokenEmbedding.Name+".table", tokenEmbedding.Table.Values, true); err != nil {
+		return err
+	}
 	for _, block := range model.Blocks {
 		selfAttention := block.Attention.(*attention.SelfAttention)
 		feedForwardLayers := block.FeedForward.Layers()
 		onGPU := blockOnGPU{attentionNormEpsilon: block.AttentionNorm.Epsilon, feedForwardNormEpsilon: block.FeedForwardNorm.Epsilon}
-		var err error
 		if onGPU.attentionNormWeights, err = trainer.newParameter(block.AttentionNorm.Name+".weights", block.AttentionNorm.Weights, false); err != nil {
 			return err
 		}
@@ -318,15 +359,31 @@ func (trainer *Trainer) uploadModel() error {
 		}
 		trainer.blocks = append(trainer.blocks, onGPU)
 	}
-	var err error
 	if trainer.finalNorm, err = trainer.newParameter(model.FinalNorm.Name+".weights", model.FinalNorm.Weights, false); err != nil {
 		return err
 	}
 	trainer.finalNormEpsilon = model.FinalNorm.Epsilon
-	if trainer.outputLayer, err = trainer.newLayer(model.OutputLayer); err != nil {
+	if trainer.isTied() {
+		trainer.outputLayer, err = trainer.newLayerTiedToTokenTable(model.OutputLayer)
+	} else {
+		trainer.outputLayer, err = trainer.newLayer(model.OutputLayer)
+	}
+	return err
+}
+
+func (trainer *Trainer) makeClippingBuffers() error {
+	numberOfPartials := 0
+	for _, current := range trainer.parameters {
+		numberOfPartials += squaredSumGroupsFor(len(current.cpuValues))
+	}
+	var err error
+	if trainer.partialSums, err = trainer.newBuffer(numberOfPartials); err != nil {
 		return err
 	}
-	return nil
+	if trainer.clipResult, err = trainer.newBuffer(2); err != nil {
+		return err
+	}
+	return trainer.clipResult.Upload([]float64{1, 0})
 }
 
 func (trainer *Trainer) UploadWeightsFromModel() error {
@@ -346,6 +403,13 @@ func (trainer *Trainer) CopyWeightsToModel() error {
 	}
 	vectormath.MarkWeightsChanged()
 	return nil
+}
+
+func (trainer *Trainer) SaveModel(path string) error {
+	if err := trainer.CopyWeightsToModel(); err != nil {
+		return err
+	}
+	return trainer.model.Save(path)
 }
 
 func (trainer *Trainer) ensureCapacity(numberOfSequences int, sequenceLength int) error {
@@ -415,10 +479,32 @@ func (trainer *Trainer) ensureCapacity(numberOfSequences int, sequenceLength int
 		hiddenGradients:            activationBuffer(rows * trainer.feedForwardSize),
 		gateGradients:              activationBuffer(rows * trainer.feedForwardSize),
 		upGradients:                activationBuffer(rows * trainer.feedForwardSize),
+		tokenIDs:                   activationBuffer(rows),
+		uniqueTokenIDs:             activationBuffer(rows),
+		rowStarts:                  activationBuffer(rows + 1),
+		sortedRows:                 activationBuffer(rows),
+	}
+	if trainer.residualDropout > 0 {
+		trainer.shared.droppedGradients = activationBuffer(rows * vectorSize)
+	}
+	if trainer.attentionDropout > 0 {
+		trainer.shared.droppedProbabilities = activationBuffer(probabilityCount)
+	}
+	if !trainer.useRotary {
+		trainer.shared.positionVectors = activationBuffer(sequenceLength * vectorSize)
 	}
 	if allocationError != nil {
 		trainer.freeActivations()
 		return allocationError
+	}
+	if !trainer.useRotary {
+		positionVectors := make([]float64, sequenceLength*vectorSize)
+		for position := range sequenceLength {
+			copy(positionVectors[position*vectorSize:(position+1)*vectorSize], embedding.PositionalEncodingAt(position, vectorSize))
+		}
+		if err := trainer.shared.positionVectors.Upload(positionVectors); err != nil {
+			return err
+		}
 	}
 	if trainer.useRotary {
 		if err := makeRotaryTables(trainer.device, &trainer.queryRotary, sequenceLength); err != nil {
@@ -444,7 +530,8 @@ func (trainer *Trainer) activationBuffers() []*gpu.Buffer {
 	return append(buffers, shared.layerOutput, shared.finalInputs, shared.finalNormed, shared.finalRootMeanSquares, shared.scores, shared.scoreGradients,
 		shared.targets, shared.rowWeights, shared.rowLosses, shared.firstGradients, shared.secondGradients, shared.normedGradients, shared.attendedGradients,
 		shared.scoreProbabilityGradients, shared.queryGradients, shared.keyGradients, shared.valueGradients, shared.keyGradientsPerQueryHead,
-		shared.valueGradientsPerQueryHead, shared.hiddenGradients, shared.gateGradients, shared.upGradients)
+		shared.valueGradientsPerQueryHead, shared.hiddenGradients, shared.gateGradients, shared.upGradients,
+		shared.tokenIDs, shared.uniqueTokenIDs, shared.rowStarts, shared.sortedRows, shared.droppedGradients, shared.droppedProbabilities, shared.positionVectors)
 }
 
 func (trainer *Trainer) freeActivations() {
@@ -521,7 +608,24 @@ func (trainer *Trainer) headShape(numberOfSequences int, rows int, inner int, co
 	return multiplyShape{rows: rows, inner: inner, columns: columns, batchCount: numberOfSequences * trainer.numberOfHeads, innerBatchCount: trainer.numberOfHeads, scale: scale, accumulate: accumulate}
 }
 
-func (trainer *Trainer) attentionForward(block blockOnGPU, activations blockActivations, numberOfSequences int, sequenceLength int) {
+const (
+	attentionOutputDropoutSite   = 0
+	feedForwardOutputDropoutSite = 1
+	attentionWeightsDropoutSite  = 2
+)
+
+func (trainer *Trainer) dropoutSeed(blockIndex int, site int) uint32 {
+	return trainer.stepSeed ^ uint32(blockIndex*3+site+1)*0x9e3779b9
+}
+
+func (trainer *Trainer) droppedProbabilitiesFor(blockIndex int, activations blockActivations, numberOfSequences int, sequenceLength int) *gpu.Buffer {
+	count := numberOfSequences * trainer.numberOfHeads * sequenceLength * sequenceLength
+	trainer.recorder.Copy(activations.probabilities, trainer.shared.droppedProbabilities, count)
+	trainer.kernels.dropOut(trainer.recorder, trainer.shared.droppedProbabilities, count, trainer.dropoutSeed(blockIndex, attentionWeightsDropoutSite), trainer.attentionDropout)
+	return trainer.shared.droppedProbabilities
+}
+
+func (trainer *Trainer) attentionForward(blockIndex int, block blockOnGPU, activations blockActivations, numberOfSequences int, sequenceLength int, isTraining bool) {
 	rows := numberOfSequences * sequenceLength
 	group := trainer.numberOfHeads / trainer.keyValueHeads
 	scale := 1 / math.Sqrt(float64(trainer.headSize))
@@ -539,19 +643,27 @@ func (trainer *Trainer) attentionForward(block blockOnGPU, activations blockActi
 		trainer.perHeadSquare(activations.probabilities, sequenceLength),
 		trainer.headShape(numberOfSequences, sequenceLength, trainer.headSize, sequenceLength, scale, false))
 	trainer.kernels.causalSoftmaxRows(trainer.recorder, activations.probabilities, numberOfSequences*trainer.numberOfHeads*sequenceLength, sequenceLength)
+	usedProbabilities := activations.probabilities
+	if isTraining && trainer.attentionDropout > 0 {
+		usedProbabilities = trainer.droppedProbabilitiesFor(blockIndex, activations, numberOfSequences, sequenceLength)
+	}
 	trainer.kernels.multiply(trainer.recorder,
-		trainer.perHeadSquare(activations.probabilities, sequenceLength),
+		trainer.perHeadSquare(usedProbabilities, sequenceLength),
 		trainer.perHead(activations.values, sequenceLength, trainer.keyValueHeads, group),
 		trainer.perHead(activations.attended, sequenceLength, trainer.numberOfHeads, 1),
 		trainer.headShape(numberOfSequences, sequenceLength, sequenceLength, trainer.headSize, 1, false))
 }
 
-func (trainer *Trainer) attentionBackward(block blockOnGPU, activations blockActivations, numberOfSequences int, sequenceLength int, attendedGradients *gpu.Buffer, normedGradients *gpu.Buffer) {
+func (trainer *Trainer) attentionBackward(blockIndex int, block blockOnGPU, activations blockActivations, numberOfSequences int, sequenceLength int, attendedGradients *gpu.Buffer, normedGradients *gpu.Buffer) {
 	shared := trainer.shared
 	rows := numberOfSequences * sequenceLength
 	group := trainer.numberOfHeads / trainer.keyValueHeads
 	scale := 1 / math.Sqrt(float64(trainer.headSize))
-	probabilities := trainer.perHeadSquare(activations.probabilities, sequenceLength)
+	probabilityCount := numberOfSequences * trainer.numberOfHeads * sequenceLength * sequenceLength
+	usedProbabilities := activations.probabilities
+	if trainer.attentionDropout > 0 {
+		usedProbabilities = trainer.droppedProbabilitiesFor(blockIndex, activations, numberOfSequences, sequenceLength)
+	}
 	probabilityGradients := trainer.perHeadSquare(shared.scoreProbabilityGradients, sequenceLength)
 	attendedGradientView := trainer.perHead(attendedGradients, sequenceLength, trainer.numberOfHeads, 1)
 
@@ -568,11 +680,14 @@ func (trainer *Trainer) attentionBackward(block blockOnGPU, activations blockAct
 		keyGradientTarget = shared.keyGradientsPerQueryHead
 	}
 	trainer.kernels.multiply(trainer.recorder,
-		probabilities.transposed(),
+		trainer.perHeadSquare(usedProbabilities, sequenceLength).transposed(),
 		attendedGradientView,
 		trainer.perHead(valueGradientTarget, sequenceLength, trainer.numberOfHeads, 1),
 		trainer.headShape(numberOfSequences, sequenceLength, sequenceLength, trainer.headSize, 1, false))
 
+	if trainer.attentionDropout > 0 {
+		trainer.kernels.dropOut(trainer.recorder, shared.scoreProbabilityGradients, probabilityCount, trainer.dropoutSeed(blockIndex, attentionWeightsDropoutSite), trainer.attentionDropout)
+	}
 	trainer.kernels.softmaxBackwardRows(trainer.recorder, activations.probabilities, shared.scoreProbabilityGradients, numberOfSequences*trainer.numberOfHeads*sequenceLength, sequenceLength)
 
 	trainer.kernels.multiply(trainer.recorder,
@@ -600,15 +715,18 @@ func (trainer *Trainer) attentionBackward(block blockOnGPU, activations blockAct
 }
 
 type preparedBatch struct {
-	numberOfSequences int
-	sequenceLength    int
-	inputIDs          [][]int
-	embeddedRows      []float64
-	targets           []float64
-	rowWeights        []float64
+	numberOfSequences    int
+	sequenceLength       int
+	tokenIDs             []float64
+	targets              []float64
+	rowWeights           []float64
+	uniqueTokenIDs       []float64
+	rowStarts            []float64
+	sortedRows           []float64
+	numberOfUniqueTokens int
 }
 
-func (trainer *Trainer) prepareBatch(examples []transformer.Example) (preparedBatch, error) {
+func (trainer *Trainer) prepareBatch(examples []transformer.Example, sequencesInWholeBatch int) (preparedBatch, error) {
 	if len(examples) == 0 {
 		return preparedBatch{}, fmt.Errorf("no examples given")
 	}
@@ -638,38 +756,47 @@ func (trainer *Trainer) prepareBatch(examples []transformer.Example) (preparedBa
 	}
 
 	rows := batch.numberOfSequences * batch.sequenceLength
-	vectorSize := trainer.vectorSize
-	batch.embeddedRows = make([]float64, rows*vectorSize)
+	batch.tokenIDs = make([]float64, rows)
 	batch.targets = make([]float64, rows)
 	batch.rowWeights = make([]float64, rows)
-	tokenEmbedding := trainer.model.TokenEmbedding
+	rowsByToken := map[int][]int{}
 	for sequence, tokenIDs := range allTokenIDs {
 		inputIDs := tokenIDs[:len(tokenIDs)-1]
-		batch.inputIDs = append(batch.inputIDs, inputIDs)
 		counted := 0
 		for row := range inputIDs {
 			if row+1 >= firstCountedTokens[sequence] {
 				counted++
 			}
 		}
-		for position := 0; position < batch.sequenceLength; position++ {
+		for position := 0; position < len(inputIDs); position++ {
 			row := sequence*batch.sequenceLength + position
-			tokenID := 0
-			if position < len(inputIDs) {
-				tokenID = inputIDs[position]
-				batch.targets[row] = float64(tokenIDs[position+1])
-				if position+1 >= firstCountedTokens[sequence] && counted > 0 {
-					batch.rowWeights[row] = 1 / float64(batch.numberOfSequences*counted)
-				}
+			batch.tokenIDs[row] = float64(inputIDs[position])
+			batch.targets[row] = float64(tokenIDs[position+1])
+			if position+1 >= firstCountedTokens[sequence] && counted > 0 {
+				batch.rowWeights[row] = 1 / float64(sequencesInWholeBatch*counted)
 			}
-			vector := tokenEmbedding.VectorFor(tokenID)
-			if !trainer.useRotary {
-				vector = vectormath.Add(vector, embedding.PositionalEncodingAt(position, vectorSize))
-			}
-			copy(batch.embeddedRows[row*vectorSize:(row+1)*vectorSize], vector)
+			rowsByToken[inputIDs[position]] = append(rowsByToken[inputIDs[position]], row)
 		}
 	}
+	batch.addEmbeddingGradientLists(rowsByToken)
 	return batch, nil
+}
+
+func (batch *preparedBatch) addEmbeddingGradientLists(rowsByToken map[int][]int) {
+	var uniqueTokenIDs []int
+	for tokenID := range rowsByToken {
+		uniqueTokenIDs = append(uniqueTokenIDs, tokenID)
+	}
+	sort.Ints(uniqueTokenIDs)
+	batch.numberOfUniqueTokens = len(uniqueTokenIDs)
+	batch.rowStarts = append(batch.rowStarts, 0)
+	for _, tokenID := range uniqueTokenIDs {
+		batch.uniqueTokenIDs = append(batch.uniqueTokenIDs, float64(tokenID))
+		for _, row := range rowsByToken[tokenID] {
+			batch.sortedRows = append(batch.sortedRows, float64(row))
+		}
+		batch.rowStarts = append(batch.rowStarts, float64(len(batch.sortedRows)))
+	}
 }
 
 func (trainer *Trainer) isFrozen(name string) bool {
@@ -682,11 +809,15 @@ func (trainer *Trainer) isFrozen(name string) bool {
 }
 
 func (trainer *Trainer) TrainBatch(sequences [][]int) float64 {
+	return trainer.TrainOnExamples(examplesFromSequences(sequences))
+}
+
+func examplesFromSequences(sequences [][]int) []transformer.Example {
 	examples := make([]transformer.Example, len(sequences))
 	for i, sequence := range sequences {
 		examples[i] = transformer.Example{AnswerIDs: sequence}
 	}
-	return trainer.TrainOnExamples(examples)
+	return examples
 }
 
 func (trainer *Trainer) TrainOnExamples(examples []transformer.Example) float64 {
@@ -697,17 +828,99 @@ func (trainer *Trainer) TrainOnExamples(examples []transformer.Example) float64 
 	return loss
 }
 
-func (trainer *Trainer) trainOnExamples(examples []transformer.Example) (float64, error) {
-	if trainer.closed {
-		return 0, fmt.Errorf("the trainer is closed")
+func (trainer *Trainer) EvaluationLoss(sequences [][]int) float64 {
+	loss, err := trainer.evaluationLoss(examplesFromSequences(sequences))
+	if err != nil {
+		panic(fmt.Sprintf("gputraining: %v", err))
 	}
-	batch, err := trainer.prepareBatch(examples)
+	return loss
+}
+
+func (trainer *Trainer) EvaluationLossOnExamples(examples []transformer.Example) float64 {
+	loss, err := trainer.evaluationLoss(examples)
+	if err != nil {
+		panic(fmt.Sprintf("gputraining: %v", err))
+	}
+	return loss
+}
+
+func (trainer *Trainer) startBatch(examples []transformer.Example, sequencesInWholeBatch int) (preparedBatch, error) {
+	if trainer.closed {
+		return preparedBatch{}, fmt.Errorf("the trainer is closed")
+	}
+	batch, err := trainer.prepareBatch(examples, sequencesInWholeBatch)
+	if err != nil {
+		return preparedBatch{}, err
+	}
+	if err := trainer.ensureCapacity(batch.numberOfSequences, batch.sequenceLength); err != nil {
+		return preparedBatch{}, err
+	}
+	trainer.recorder.Begin()
+	shared := trainer.shared
+	uploads := []struct {
+		target *gpu.Buffer
+		values []float64
+	}{
+		{shared.tokenIDs, batch.tokenIDs},
+		{shared.targets, batch.targets},
+		{shared.rowWeights, batch.rowWeights},
+		{shared.uniqueTokenIDs, batch.uniqueTokenIDs},
+		{shared.rowStarts, batch.rowStarts},
+		{shared.sortedRows, batch.sortedRows},
+	}
+	for _, upload := range uploads {
+		if err := trainer.recorder.Upload(upload.target, upload.values); err != nil {
+			return preparedBatch{}, err
+		}
+	}
+	return batch, nil
+}
+
+func sumOf(values []float64) float64 {
+	total := 0.0
+	for _, value := range values {
+		total += value
+	}
+	return total
+}
+
+func (trainer *Trainer) evaluationLoss(examples []transformer.Example) (float64, error) {
+	return trainer.evaluationLossInWholeBatch(examples, len(examples))
+}
+
+func (trainer *Trainer) evaluationLossInWholeBatch(examples []transformer.Example, sequencesInWholeBatch int) (float64, error) {
+	batch, err := trainer.startBatch(examples, sequencesInWholeBatch)
 	if err != nil {
 		return 0, err
 	}
-	if err := trainer.ensureCapacity(batch.numberOfSequences, batch.sequenceLength); err != nil {
+	trainer.recordForward(batch, false)
+	rowLosses := make([]float64, batch.numberOfSequences*batch.sequenceLength)
+	trainer.recorder.Download(trainer.shared.rowLosses, rowLosses)
+	if err := trainer.recorder.Submit(); err != nil {
 		return 0, err
 	}
+	return sumOf(rowLosses), nil
+}
+
+func (trainer *Trainer) trainOnExamples(examples []transformer.Example) (float64, error) {
+	batch, err := trainer.startBatch(examples, len(examples))
+	if err != nil {
+		return 0, err
+	}
+	trainer.stepSeed = uint32(vectormath.RandomNumberBetween(0, 4294967295))
+	trainer.recordForward(batch, true)
+	trainer.recordBackward(batch)
+	rowLosses := make([]float64, batch.numberOfSequences*batch.sequenceLength)
+	trainer.recorder.Download(trainer.shared.rowLosses, rowLosses)
+	clipResult := trainer.recordOptimizerStep()
+	if err := trainer.recorder.Submit(); err != nil {
+		return 0, err
+	}
+	trainer.lastGradientNorm = clipResult[1]
+	return sumOf(rowLosses), nil
+}
+
+func (trainer *Trainer) recordForward(batch preparedBatch, isTraining bool) {
 	numberOfSequences := batch.numberOfSequences
 	sequenceLength := batch.sequenceLength
 	rows := numberOfSequences * sequenceLength
@@ -716,21 +929,15 @@ func (trainer *Trainer) trainOnExamples(examples []transformer.Example) (float64
 	shared := trainer.shared
 	loaded := trainer.kernels
 
-	recorder.Begin()
-	if err := recorder.Upload(trainer.activations[0].inputs, batch.embeddedRows); err != nil {
-		return 0, err
-	}
-	if err := recorder.Upload(shared.targets, batch.targets); err != nil {
-		return 0, err
-	}
-	if err := recorder.Upload(shared.rowWeights, batch.rowWeights); err != nil {
-		return 0, err
-	}
+	loaded.gatherEmbeddings(recorder, trainer.tokenTable.values, shared.tokenIDs, shared.positionVectors, trainer.activations[0].inputs, rows, vectorSize, sequenceLength)
 	for blockIndex, block := range trainer.blocks {
 		activations := trainer.activations[blockIndex]
 		loaded.normalizeForward(recorder, activations.inputs, block.attentionNormWeights.values, activations.attentionNormed, activations.attentionRootMeanSquares, rows, vectorSize, block.attentionNormEpsilon)
-		trainer.attentionForward(block, activations, numberOfSequences, sequenceLength)
+		trainer.attentionForward(blockIndex, block, activations, numberOfSequences, sequenceLength, isTraining)
 		trainer.linearForward(block.output, activations.attended, shared.layerOutput, rows)
+		if isTraining {
+			loaded.dropOut(recorder, shared.layerOutput, rows*vectorSize, trainer.dropoutSeed(blockIndex, attentionOutputDropoutSite), trainer.residualDropout)
+		}
 		loaded.addBuffers(recorder, activations.inputs, shared.layerOutput, activations.afterAttention, rows*vectorSize)
 
 		loaded.normalizeForward(recorder, activations.afterAttention, block.feedForwardNormWeights.values, activations.feedForwardNormed, activations.feedForwardRootMeanSquares, rows, vectorSize, block.feedForwardNormEpsilon)
@@ -738,6 +945,9 @@ func (trainer *Trainer) trainOnExamples(examples []transformer.Example) (float64
 		trainer.linearForward(block.up, activations.feedForwardNormed, activations.up, rows)
 		loaded.gatedForward(recorder, activations.gate, activations.up, activations.hidden, rows*trainer.feedForwardSize, trainer.clampLimit)
 		trainer.linearForward(block.down, activations.hidden, shared.layerOutput, rows)
+		if isTraining {
+			loaded.dropOut(recorder, shared.layerOutput, rows*vectorSize, trainer.dropoutSeed(blockIndex, feedForwardOutputDropoutSite), trainer.residualDropout)
+		}
 		nextInputs := shared.finalInputs
 		if blockIndex+1 < len(trainer.blocks) {
 			nextInputs = trainer.activations[blockIndex+1].inputs
@@ -748,7 +958,29 @@ func (trainer *Trainer) trainOnExamples(examples []transformer.Example) (float64
 	loaded.normalizeForward(recorder, shared.finalInputs, trainer.finalNorm.values, shared.finalNormed, shared.finalRootMeanSquares, rows, vectorSize, trainer.finalNormEpsilon)
 	trainer.linearForward(trainer.outputLayer, shared.finalNormed, shared.scores, rows)
 	loaded.crossEntropyRows(recorder, shared.scores, shared.targets, shared.rowWeights, shared.scoreGradients, shared.rowLosses, rows, trainer.vocabularySize)
+}
 
+func (trainer *Trainer) droppedGradientsFor(gradients *gpu.Buffer, blockIndex int, site int, count int) *gpu.Buffer {
+	if trainer.residualDropout <= 0 {
+		return gradients
+	}
+	trainer.recorder.Copy(gradients, trainer.shared.droppedGradients, count)
+	trainer.kernels.dropOut(trainer.recorder, trainer.shared.droppedGradients, count, trainer.dropoutSeed(blockIndex, site), trainer.residualDropout)
+	return trainer.shared.droppedGradients
+}
+
+func (trainer *Trainer) recordBackward(batch preparedBatch) {
+	numberOfSequences := batch.numberOfSequences
+	sequenceLength := batch.sequenceLength
+	rows := numberOfSequences * sequenceLength
+	vectorSize := trainer.vectorSize
+	recorder := trainer.recorder
+	shared := trainer.shared
+	loaded := trainer.kernels
+
+	if !trainer.isTied() {
+		recorder.Fill(trainer.tokenTable.gradients, 0)
+	}
 	trainer.linearBackward(trainer.outputLayer, shared.finalNormed, shared.scoreGradients, shared.normedGradients, rows, false)
 	loaded.normalizeBackward(recorder, shared.finalInputs, trainer.finalNorm.values, shared.finalRootMeanSquares, shared.normedGradients, nil, shared.firstGradients, rows, vectorSize)
 	loaded.normalizeWeightGradients(recorder, shared.finalInputs, shared.finalRootMeanSquares, shared.normedGradients, trainer.finalNorm.gradients, rows, vectorSize, false)
@@ -756,78 +988,73 @@ func (trainer *Trainer) trainOnExamples(examples []transformer.Example) (float64
 	outputGradients := shared.firstGradients
 	middleGradients := shared.secondGradients
 	for blockIndex, block := range slices.Backward(trainer.blocks) {
-
 		activations := trainer.activations[blockIndex]
 
-		trainer.linearBackward(block.down, activations.hidden, outputGradients, shared.hiddenGradients, rows, false)
+		fedForwardGradients := trainer.droppedGradientsFor(outputGradients, blockIndex, feedForwardOutputDropoutSite, rows*vectorSize)
+		trainer.linearBackward(block.down, activations.hidden, fedForwardGradients, shared.hiddenGradients, rows, false)
 		loaded.gatedBackward(recorder, activations.gate, activations.up, shared.hiddenGradients, shared.gateGradients, shared.upGradients, rows*trainer.feedForwardSize, trainer.clampLimit)
 		trainer.linearBackward(block.gate, activations.feedForwardNormed, shared.gateGradients, shared.normedGradients, rows, false)
 		trainer.linearBackward(block.up, activations.feedForwardNormed, shared.upGradients, shared.normedGradients, rows, true)
 		loaded.normalizeBackward(recorder, activations.afterAttention, block.feedForwardNormWeights.values, activations.feedForwardRootMeanSquares, shared.normedGradients, outputGradients, middleGradients, rows, vectorSize)
 		loaded.normalizeWeightGradients(recorder, activations.afterAttention, activations.feedForwardRootMeanSquares, shared.normedGradients, block.feedForwardNormWeights.gradients, rows, vectorSize, false)
 
-		trainer.linearBackward(block.output, activations.attended, middleGradients, shared.attendedGradients, rows, false)
-		trainer.attentionBackward(block, activations, numberOfSequences, sequenceLength, shared.attendedGradients, shared.normedGradients)
+		attendedOutputGradients := trainer.droppedGradientsFor(middleGradients, blockIndex, attentionOutputDropoutSite, rows*vectorSize)
+		trainer.linearBackward(block.output, activations.attended, attendedOutputGradients, shared.attendedGradients, rows, false)
+		trainer.attentionBackward(blockIndex, block, activations, numberOfSequences, sequenceLength, shared.attendedGradients, shared.normedGradients)
 		loaded.normalizeBackward(recorder, activations.inputs, block.attentionNormWeights.values, activations.attentionRootMeanSquares, shared.normedGradients, middleGradients, outputGradients, rows, vectorSize)
 		loaded.normalizeWeightGradients(recorder, activations.inputs, activations.attentionRootMeanSquares, shared.normedGradients, block.attentionNormWeights.gradients, rows, vectorSize, false)
 	}
+	loaded.scatterEmbeddingGradients(recorder, outputGradients, shared.uniqueTokenIDs, shared.rowStarts, shared.sortedRows, trainer.tokenTable.gradients, batch.numberOfUniqueTokens, vectorSize)
+}
 
+func (trainer *Trainer) trainableParameters() []*parameterOnGPU {
+	var trainable []*parameterOnGPU
+	for _, current := range trainer.parameters {
+		if !trainer.isFrozen(current.name) {
+			trainable = append(trainable, current)
+		}
+	}
+	return trainable
+}
+
+func (trainer *Trainer) LearningRate() float64 {
+	return trainer.Options.LearningRate * trainer.Options.Schedule.FractionAt(trainer.stepsTaken)
+}
+
+func (trainer *Trainer) recordOptimizerStep() []float64 {
+	recorder := trainer.recorder
+	loaded := trainer.kernels
+	trainable := trainer.trainableParameters()
+	numberOfPartials := 0
+	for _, current := range trainable {
+		numberOfPartials += loaded.squaredSumsInto(recorder, current.gradients, trainer.partialSums, numberOfPartials, len(current.cpuValues))
+	}
+	loaded.computeClipScale(recorder, trainer.partialSums, trainer.clipResult, numberOfPartials, trainer.Options.MaximumGradientNorm)
+
+	learningRate := trainer.LearningRate()
 	trainer.stepsTaken++
 	step := adamWStep{
-		learningRate:                     trainer.Options.LearningRate,
+		learningRate:                     learningRate,
 		momentumDecay:                    trainer.Options.MomentumDecay,
 		squaredGradientDecay:             trainer.Options.SquaredGradientDecay,
 		epsilon:                          trainer.Options.Epsilon,
 		averageGradientCorrection:        1 - math.Pow(trainer.Options.MomentumDecay, float64(trainer.stepsTaken)),
 		averageSquaredGradientCorrection: 1 - math.Pow(trainer.Options.SquaredGradientDecay, float64(trainer.stepsTaken)),
 	}
-	for _, current := range trainer.parameters {
-		if trainer.isFrozen(current.name) {
-			continue
-		}
+	for _, current := range trainable {
 		shrinkFactor := 1.0
 		if current.isMatrix {
-			shrinkFactor = 1 - trainer.Options.LearningRate*trainer.Options.WeightDecay
+			shrinkFactor = 1 - learningRate*trainer.Options.WeightDecay
 		}
-		loaded.adamWUpdate(recorder, current.values, current.gradients, current.averageGradients, current.averageSquaredGradients, len(current.cpuValues), step, shrinkFactor)
+		loaded.adamWUpdate(recorder, current.values, current.gradients, current.averageGradients, current.averageSquaredGradients, trainer.clipResult, len(current.cpuValues), step, shrinkFactor)
 	}
-
-	embeddingGradients := make([]float64, rows*vectorSize)
-	rowLosses := make([]float64, rows)
-	recorder.Download(outputGradients, embeddingGradients)
-	recorder.Download(shared.rowLosses, rowLosses)
-	if err := recorder.Submit(); err != nil {
-		return 0, err
-	}
-
-	trainer.updateEmbedding(batch, embeddingGradients)
-	loss := 0.0
-	for _, rowLoss := range rowLosses {
-		loss += rowLoss
-	}
-	return loss, nil
+	clipResult := make([]float64, 2)
+	recorder.Download(trainer.clipResult, clipResult)
+	return clipResult
 }
 
-func (trainer *Trainer) updateEmbedding(batch preparedBatch, embeddingGradients []float64) {
-	tokenEmbedding := trainer.model.TokenEmbedding
-	embeddingParameters := tokenEmbedding.Parameters()
-	trainer.embeddingOptimizer.LearningRate = trainer.Options.LearningRate
-	trainer.embeddingOptimizer.WeightDecay = trainer.Options.WeightDecay
-	trainer.embeddingOptimizer.MomentumDecay = trainer.Options.MomentumDecay
-	trainer.embeddingOptimizer.SquaredGradientDecay = trainer.Options.SquaredGradientDecay
-	trainer.embeddingOptimizer.Epsilon = trainer.Options.Epsilon
-	if trainer.isFrozen(embeddingParameters[0].Name) {
-		trainer.embeddingOptimizer.Update(nil)
-		return
-	}
-	parameter.ZeroGradients(embeddingParameters)
-	vectorSize := trainer.vectorSize
-	for sequence, inputIDs := range batch.inputIDs {
-		firstRow := sequence * batch.sequenceLength
-		gradients := vectormath.Matrix{Rows: len(inputIDs), Columns: vectorSize, Values: embeddingGradients[firstRow*vectorSize : (firstRow+len(inputIDs))*vectorSize]}
-		tokenEmbedding.AddGradients(inputIDs, gradients)
-	}
-	trainer.embeddingOptimizer.Update(embeddingParameters)
+func (trainer *Trainer) LastGradientNorm() float64 {
+	return trainer.lastGradientNorm
 }
 
 func (trainer *Trainer) StepsTaken() int {

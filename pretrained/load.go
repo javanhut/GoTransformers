@@ -148,13 +148,6 @@ func LoadLlamaWeights(model *transformer.Model, config LlamaConfig, folder strin
 			if model.Settings.WeightPrecision != lowprecision.Float64 {
 				runtime.GC()
 			}
-			if ourName == "tokens.table" && config.TieWordEmbeddings {
-				if err := model.SetWeight("output.weights", tensor.Values); err != nil {
-					opened.Close()
-					return err
-				}
-				loaded["output.weights"] = true
-			}
 		}
 		opened.Close()
 	}
@@ -168,6 +161,11 @@ func LoadLlamaWeights(model *transformer.Model, config LlamaConfig, folder strin
 	sort.Strings(missing)
 	if len(missing) > 0 {
 		return fmt.Errorf("%s: the weights don't fill %d parameters, for example %v", folder, len(missing), missing[:min(len(missing), 5)])
+	}
+	if config.TieWordEmbeddings && model.TokenEmbedding.IsCompressed() {
+		if err := model.OutputLayer.SetCompressedWeights(model.TokenEmbedding.CompressedTable); err != nil {
+			return err
+		}
 	}
 	vectormath.MarkWeightsChanged()
 	return nil
@@ -194,7 +192,7 @@ func LoadLlamaWithPrecision(folder string, precision lowprecision.Precision) (*t
 	if err := LoadLlamaWeights(model, config, folder); err != nil {
 		return nil, nil, err
 	}
-	loadedTokenizer, err := tokenizer.LoadHuggingFace(filepath.Join(folder, "tokenizer.json"))
+	loadedTokenizer, err := LoadTokenizer(folder)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -202,4 +200,16 @@ func LoadLlamaWithPrecision(folder string, precision lowprecision.Precision) (*t
 		return nil, nil, fmt.Errorf("%s: tokenizer has %d tokens but the model only has %d", folder, loadedTokenizer.VocabularySize(), config.VocabularySize)
 	}
 	return model, loadedTokenizer, nil
+}
+
+func LoadTokenizer(folder string) (*tokenizer.Tokenizer, error) {
+	huggingFacePath := filepath.Join(folder, "tokenizer.json")
+	if _, err := os.Stat(huggingFacePath); err == nil {
+		return tokenizer.LoadHuggingFace(huggingFacePath)
+	}
+	sentencePiecePath := filepath.Join(folder, "tokenizer.model")
+	if _, err := os.Stat(sentencePiecePath); err == nil {
+		return tokenizer.LoadSentencePiece(sentencePiecePath)
+	}
+	return nil, fmt.Errorf("%s has neither tokenizer.json nor tokenizer.model", folder)
 }

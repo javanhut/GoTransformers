@@ -31,10 +31,10 @@ import (
 | Attention | Multi-head self-attention with a key/value cache, sliding windows, top-k, rotary positions (full or partial), grouped-query and multi-query attention, keys that double as values, query/key normalization, attention sinks, low-rank queries, cross-layer key/value sharing |
 | Compressed attention | DeepSeek-V4 style heavily compressed (HCA) and compressed sparse (CSA) attention with a lightning indexer |
 | Model parts | RMSNorm, LayerNorm, SwiGLU / GeGLU / ReGLU (with optional clamping), mixture-of-experts, mHC residual streams, multi-token prediction |
-| Training | SGD, momentum, Adam, AdamW, Muon; batches; dropout; answer-only fine-tuning; freezing layers; LoRA adapters (also over compressed Int8/FP4 weights); checkpoints that resume exactly |
-| Running models | Generation with a cache, top-p sampling, chat templates and multi-turn conversations, cache saved to disk, answer scoring, "I don't know" when confidence is low, weights compressed to Float32, Int8 or FP4 |
-| Files | Byte-level BPE tokenizer (train your own or load Hugging Face `tokenizer.json`), safetensors, Llama and Qwen 2 models from Hugging Face, CSV/TSV/JSONL/text data (including chat datasets in `messages`, ShareGPT, Alpaca and prompt/completion form), weight files |
-| Hardware | Multi-threaded CPU math, Vulkan GPU backend with an optional weight cache, float32 training entirely on the GPU (about 26× faster than the CPU on an integrated GPU) |
+| Training | SGD, momentum, Adam, AdamW, Muon; learning rate warmup and decay (cosine, linear, warmup-stable-decay); gradient clipping; a training loop with held-out evaluation, best-model saving and early stopping; batches; dropout; weight tying; answer-only fine-tuning; freezing layers; LoRA adapters (also over compressed Int8/FP4 weights); checkpoints that resume exactly |
+| Running models | Generation with a cache, top-k, top-p, min-p and typical sampling, repetition/frequency/presence penalties, seeded sampling, output constrained to valid JSON, a JSON schema or a list of choices, chat templates and multi-turn conversations, cache saved to disk, answer scoring, "I don't know" when confidence is low, weights compressed to Float32, Int8 or FP4 |
+| Files | Byte-level BPE tokenizer (train your own or load Hugging Face `tokenizer.json`), SentencePiece tokenizers (`tokenizer.model`, Llama 2 / Mistral style `tokenizer.json`), safetensors, Llama, Mistral and Qwen 2 models from Hugging Face, CSV/TSV/JSONL/text/Parquet data (including chat datasets in `messages`, ShareGPT, Alpaca and prompt/completion form), pure-Go snappy and zstd, on-disk token files for datasets bigger than memory, weight files stored as float64, float32 or bfloat16, compressed models saved as they are |
+| Hardware | Multi-threaded CPU math, Vulkan GPU backend with an optional weight cache, float32 training entirely on the GPU, embedding included (about 10,400 training tokens/s for a 6-block, 256-wide model on an Intel integrated GPU), data-parallel training over several GPUs |
 
 ## Getting started
 
@@ -59,6 +59,7 @@ go run ./examples/tinylanguagemodel
 | `go run ./examples/lora -model <folder>` | Teaching an instruct model new facts with LoRA adapters over Int8 weights |
 | `go run ./examples/gpucheck` | Listing GPUs and timing CPU against GPU |
 | `go run ./examples/gputrain -text book.txt -tokens bpe` | Training a model from scratch on the GPU |
+| `go run ./examples/gputrain -text data.parquet -field text -tokens bpe -token-file data.tokens -gpus all` | The same on a Hugging Face dataset, streamed to disk, on every GPU |
 
 Useful flags for `tinylanguagemodel`:
 
@@ -67,6 +68,8 @@ go run ./examples/tinylanguagemodel -text book.txt -steps 2000 -batch 8 -optimiz
 go run ./examples/tinylanguagemodel -deepseek                 # compressed attention, experts, mHC, multi-token prediction
 go run ./examples/tinylanguagemodel -checkpoint run1          # saves every 100 steps; run it again to resume
 ```
+
+`gputrain` warms the learning rate up over the first twentieth of the steps, then lowers it along a cosine (`-schedule cosine|linear|wsd|none`, `-warmup`, `-final-fraction`), clips gradients at norm 1 (`-clip`), holds back 2% of the tokens and reports their loss every 100 steps (`-eval-fraction`, `-eval-every`), keeps the best model (`-best best.weights`), ties the embedding and output weights (`-tie`), and saves float32 weights (`-save-precision`).
 
 ### Running a real model
 
@@ -80,12 +83,12 @@ Llama-architecture and Qwen 2 models with byte-level BPE tokenizers load the sam
 
 | `-precision` | Memory | Speed |
 |---|---|---|
-| Float64 | 1.31 GB | 19 tokens/s |
-| Float32 | 0.66 GB | 24 tokens/s, identical output |
-| Int8 | 0.22 GB | 28 tokens/s |
-| FP4 | 0.13 GB | 15 tokens/s |
+| Float64 | 1.09 GB | 20 tokens/s |
+| Float32 | 0.55 GB | 24 tokens/s, identical output |
+| Int8 | 0.18 GB | 27 tokens/s |
+| FP4 | 0.11 GB | 15 tokens/s |
 
-Float32 is lossless for models published in bfloat16.
+Float32 is lossless for models published in bfloat16. SmolLM2 ties its embedding and output weights, so the table is kept once.
 
 ## Using it in code
 
@@ -133,11 +136,28 @@ model.TrainOnExamples(examples, adamW)
 
 Every example program that reads data takes `.jsonl` too: `-text data.jsonl` (with `-field` for the text field, default `text`) for `tinylanguagemodel` and `gputrain`, and `-pairs data.jsonl` for `finetune` and `lora`.
 
+Force a reply to be valid JSON (small models can't be trusted to write it on their own), with better sampling:
+
+```go
+jsonSettings := constrained.DefaultJSONSettings()
+jsonSettings.RequireObjectAtTopLevel = true
+reply, err := conversation.Reply("Describe a cat called Tom as JSON.", chat.ReplyOptions{
+	MaximumNewTokens: 200,
+	Temperature:      0.7,
+	Sampling:         transformer.SamplingOptions{TopK: 40, MinimumProbability: 0.05, RepetitionPenalty: 1.1},
+	Constraint:       constrained.NewJSONConstraint(chat.VocabularyBytes(modelTokenizer), jsonSettings),
+}, nil)
+```
+
+On the command line: `go run ./examples/chat -model SmolLM2-360M-Instruct -json -top-k 40 -min-p 0.05 -repetition-penalty 1.1`.
+
 Load an open model with compressed weights:
 
 ```go
 model, modelTokenizer, err := pretrained.LoadLlamaWithPrecision("./SmolLM2-135M", lowprecision.Int8)
 ```
+
+Save it compressed once and load it in a couple of seconds afterwards (SmolLM2-135M in Int8 is a 170 MB file): `go run ./examples/runpretrained -model ./SmolLM2-135M -precision Int8 -save smollm2.int8`, then `-load smollm2.int8`.
 
 Use a GPU:
 
@@ -162,8 +182,38 @@ for step := 0; step < 5000; step++ {
 	fmt.Println(step, loss)
 }
 trainer.CopyWeightsToModel()
-model.Save("story-model.weights")
+model.SaveWithPrecision("story-model.weights", weightfile.Float32)
 textTokenizer.SaveToFile("story-model.weights.tokenizer")
+```
+
+Warm up and decay the learning rate, clip gradients, watch held-out loss and keep the best model (the same works with `transformer.NewTrainer` on the CPU, and with `gputraining.NewDataParallelTrainer(devices, ...)` over several GPUs):
+
+```go
+settings.TieOutputToEmbedding = true
+options := gputraining.DefaultTrainerOptions(0.001, 0.1)
+options.Schedule = optimizer.WarmupThenCosine(250, 5000, 0.1)
+options.MaximumGradientNorm = 1
+trainer, err := gputraining.NewTrainer(device, model, options)
+
+trainingIDs, heldOutIDs := tokenIDs[:len(tokenIDs)*98/100], tokenIDs[len(tokenIDs)*98/100:]
+result, err := training.Loop{
+	Trainer:             trainer,
+	NumberOfSteps:       5000,
+	NextBatch:           func() [][]int { return transformer.RandomChunks(trainingIDs, 129, 16) },
+	EvaluationSequences: transformer.RandomChunks(heldOutIDs, 129, 32),
+	EvaluateEvery:       200,
+	BestModelPath:       "best.weights",
+}.Run()
+```
+
+Train on more text than fits in memory by tokenizing it to a file once:
+
+```go
+source, _ := datafile.OpenTrainingTextSource([]string{"shards/*.parquet"}, "text")
+datafile.TokenizeIntoTokenFile(source, datafile.SameTokenizeFunctionForEveryWorker(textTokenizer.Encode),
+	"corpus.tokens", textTokenizer.VocabularySize(), datafile.StreamingTokenizeOptions{})
+tokenFile, _ := datafile.OpenTokenFile("corpus.tokens")
+chunks, _ := tokenFile.RandomChunks(129, 16)
 ```
 
 Turn on the DeepSeek-V4 style architecture:
@@ -200,9 +250,9 @@ Those tests compare the model's output with an independent, deliberately simple 
 
 ## Current limits
 
-- CPU training uses float64. Compressed weights are for running models only.
-- GPU training covers standard models only (no compressed attention, experts, mHC, multi-token prediction, adapters or dropout yet), and has only been tested on an Intel integrated GPU.
-- Compressed models can't be saved yet; load the original and compress it again.
+- CPU training computes in float64 (files can be stored as float32 or bfloat16). Compressed weights are for running models only.
+- GPU training covers standard models only (no compressed attention, experts, mHC, multi-token prediction or adapters yet), and has only been tested on an Intel integrated GPU. Data-parallel training has been checked with two handles on that one GPU, not on two real cards.
+- Text weight files can't hold compressed weights; use the binary format. Checkpoints and optimizer state are always float64.
+- Parquet: flat columns only (no nested `messages` lists yet), no LZ4 or Brotli.
 - On the CPU path, batches are processed one sequence at a time. The GPU trainer processes the whole batch at once.
-- Only Llama and Qwen 2 style models with byte-level BPE tokenizers load. SentencePiece tokenizers (Llama 2, Mistral) don't yet.
-- One GPU at a time.
+- Only Llama, Mistral and Qwen 2 style models load. SentencePiece Unigram tokenizers that need a precompiled normalization map (T5) aren't supported.

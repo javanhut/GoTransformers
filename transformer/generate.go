@@ -116,6 +116,38 @@ func (model *Model) Generate(promptIDs []int, numberOfNewTokens int, temperature
 	return model.ContinueGenerating(numberOfNewTokens, temperature)
 }
 
+func (model *Model) ContinueGeneratingWithSampler(numberOfNewTokens int, sampler *Sampler) []int {
+	if model.lastScores == nil {
+		panic("Model.ContinueGeneratingWithSampler: feed at least 1 token first")
+	}
+	var generatedIDs []int
+	for len(generatedIDs) < numberOfNewTokens {
+		nextID, found := sampler.PickToken(model.lastScores)
+		if !found || isStopToken(nextID, sampler.StopTokenIDs) {
+			break
+		}
+		if err := sampler.AcceptToken(nextID); err != nil {
+			panic(fmt.Sprintf("Model.ContinueGeneratingWithSampler: the sampler picked a token its constraint refuses: %v", err))
+		}
+		generatedIDs = append(generatedIDs, nextID)
+		model.NextTokenScores(nextID)
+	}
+	return generatedIDs
+}
+
+func (model *Model) GenerateWithSampler(promptIDs []int, numberOfNewTokens int, sampler *Sampler) []int {
+	if len(promptIDs) == 0 {
+		panic("Model.GenerateWithSampler: the prompt needs at least 1 token")
+	}
+	model.StartGenerating()
+	model.Feed(promptIDs)
+	sampler.RememberPrompt(promptIDs)
+	if sampler.Constraint != nil {
+		sampler.Constraint.Restart()
+	}
+	return model.ContinueGeneratingWithSampler(numberOfNewTokens, sampler)
+}
+
 func (model *Model) CacheBytesUsed() int {
 	total := 0
 	for _, block := range model.Blocks {

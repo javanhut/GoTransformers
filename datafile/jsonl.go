@@ -151,6 +151,13 @@ func isJSONL(path string) bool {
 }
 
 func ReadTrainingText(path string, textField string) (string, error) {
+	if isParquet(path) {
+		texts, err := ReadParquetTexts(path, textField)
+		if err != nil {
+			return "", err
+		}
+		return strings.Join(texts, "\n\n"), nil
+	}
 	if !isJSONL(path) {
 		return ReadText(path)
 	}

@@ -5,6 +5,7 @@ import (
 	"github.com/javanhut/GoTransformers/attention"
 	"github.com/javanhut/GoTransformers/dropout"
 	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/parameter"
 	"github.com/javanhut/GoTransformers/perceptron"
 	"github.com/javanhut/GoTransformers/vectormath"
 )
@@ -45,6 +46,9 @@ func (model *Model) DecompressWeights() {
 		model.TokenEmbedding.Table = table
 		model.TokenEmbedding.CompressedTable = nil
 	}
+	if model.Settings.TieOutputToEmbedding {
+		model.tieOutputToEmbedding()
+	}
 }
 
 func allTokenIDs(vocabularySize int) []int {
@@ -67,7 +71,22 @@ func (model *Model) WeightBytes() int {
 	for _, layer := range model.allLayers() {
 		total += layer.WeightBytes()
 	}
+	if model.outputSharesTheEmbeddingTable() {
+		total -= model.TokenEmbedding.TableBytes()
+	}
 	return total
+}
+
+func (model *Model) outputSharesTheEmbeddingTable() bool {
+	if !model.Settings.TieOutputToEmbedding {
+		return false
+	}
+	outputLayer := model.OutputLayer
+	tokenEmbedding := model.TokenEmbedding
+	if outputLayer.IsCompressed() || tokenEmbedding.IsCompressed() {
+		return outputLayer.CompressedWeights == tokenEmbedding.CompressedTable
+	}
+	return len(outputLayer.Weights.Values) > 0 && &outputLayer.Weights.Values[0] == &tokenEmbedding.Table.Values[0]
 }
 
 func (model *Model) GradientBytes() int {
@@ -84,7 +103,9 @@ func (model *Model) GradientBytes() int {
 func (model *Model) weightSetters() map[string]func(values []float64) error {
 	setters := map[string]func(values []float64) error{}
 	for _, layer := range model.allLayers() {
-		setters[layer.Name+".weights"] = layer.SetWeights
+		if !model.isTiedOutputLayer(layer) {
+			setters[layer.Name+".weights"] = layer.SetWeights
+		}
 		setters[layer.Name+".biases"] = layer.SetBiases
 	}
 	setters[model.TokenEmbedding.Name+".table"] = model.TokenEmbedding.SetTable
@@ -104,10 +125,30 @@ func (model *Model) weightSetters() map[string]func(values []float64) error {
 	return setters
 }
 
+func (model *Model) isTiedOutputLayer(layer *perceptron.Layer) bool {
+	return layer == model.OutputLayer && model.Settings.TieOutputToEmbedding
+}
+
+func (model *Model) compressedWeightSetters() map[string]func(rows *lowprecision.Rows) error {
+	setters := map[string]func(rows *lowprecision.Rows) error{}
+	for _, layer := range model.allLayers() {
+		setters[layer.Name+".weights"] = layer.SetCompressedWeights
+	}
+	setters[model.TokenEmbedding.Name+".table"] = model.TokenEmbedding.SetCompressedTable
+	return setters
+}
+
 func (model *Model) SetWeights(savedValues map[string][]float64) error {
+	return model.SetWeightsAndCompressedWeights(savedValues, nil)
+}
+
+func (model *Model) SetWeightsAndCompressedWeights(savedValues map[string][]float64, savedCompressedValues map[string]*lowprecision.Rows) error {
 	setters := model.weightSetters()
+	compressedSetters := model.compressedWeightSetters()
 	for name := range setters {
-		if _, found := savedValues[name]; !found {
+		_, foundValues := savedValues[name]
+		_, foundCompressedValues := savedCompressedValues[name]
+		if !foundValues && !foundCompressedValues {
 			return fmt.Errorf("there is no saved parameter named %q", name)
 		}
 	}
@@ -120,8 +161,45 @@ func (model *Model) SetWeights(savedValues map[string][]float64) error {
 			return err
 		}
 	}
+	for name, rows := range savedCompressedValues {
+		setter, found := compressedSetters[name]
+		if !found {
+			return fmt.Errorf("the model has no weights named %q that can hold compressed values", name)
+		}
+		if err := setter(rows); err != nil {
+			return err
+		}
+	}
+	_, outputWasSavedCompressed := savedCompressedValues[model.OutputLayer.Name+".weights"]
+	if err := model.tieOutputAfterLoading(outputWasSavedCompressed); err != nil {
+		return err
+	}
 	vectormath.MarkWeightsChanged()
 	return nil
+}
+
+func (model *Model) tieOutputAfterLoading(outputWasSavedCompressed bool) error {
+	if !model.Settings.TieOutputToEmbedding || outputWasSavedCompressed {
+		return nil
+	}
+	if model.TokenEmbedding.IsCompressed() {
+		return model.OutputLayer.SetCompressedWeights(model.TokenEmbedding.CompressedTable)
+	}
+	if model.OutputLayer.IsCompressed() {
+		model.OutputLayer.DecompressWeights()
+	}
+	model.tieOutputToEmbedding()
+	return nil
+}
+
+func (model *Model) parametersToSave() []parameter.Parameter {
+	parameters := model.Parameters()
+	if model.Settings.TieOutputToEmbedding && model.OutputLayer.IsCompressed() && !model.outputSharesTheEmbeddingTable() {
+		outputLayer := model.OutputLayer
+		outputWeights := parameter.Parameter{Name: outputLayer.Name + ".weights", CompressedValues: outputLayer.CompressedWeights, Rows: outputLayer.Weights.Rows, Columns: outputLayer.Weights.Columns, ReadOnly: true}
+		parameters = append(parameters, outputWeights)
+	}
+	return parameters
 }
 
 func (model *Model) SetWeight(name string, values []float64) error {

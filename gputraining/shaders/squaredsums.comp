@@ -1,0 +1,40 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer ValueBuffer {
+    float values[];
+};
+
+layout(std430, set = 0, binding = 1) buffer PartialBuffer {
+    float partialSums[];
+};
+
+layout(push_constant) uniform Settings {
+    uint count;
+    uint firstPartial;
+    uint numberOfGroups;
+} settings;
+
+shared float partials[256];
+
+void main() {
+    uint thread = gl_LocalInvocationID.x;
+    uint group = gl_WorkGroupID.x;
+    float sum = 0.0;
+    for (uint index = group * 256u + thread; index < settings.count; index += settings.numberOfGroups * 256u) {
+        float value = values[index];
+        sum += value * value;
+    }
+    partials[thread] = sum;
+    barrier();
+    for (uint distance = 128u; distance > 0u; distance /= 2u) {
+        if (thread < distance) {
+            partials[thread] += partials[thread + distance];
+        }
+        barrier();
+    }
+    if (thread == 0u) {
+        partialSums[settings.firstPartial + group] = partials[0];
+    }
+}

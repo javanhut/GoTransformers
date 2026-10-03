@@ -53,13 +53,24 @@ type GenerationOptions struct {
 	StopTokenIDs     []int
 	ConfidenceTarget float64
 	AbstainTokenIDs  []int
+	Sampling         SamplingOptions
+	Constraint       TokenConstraint
+}
+
+func (options GenerationOptions) samplingOptions() SamplingOptions {
+	sampling := options.Sampling
+	if sampling.Temperature == 0 {
+		sampling.Temperature = options.Temperature
+	}
+	return sampling
 }
 
 type GeneratedAnswer struct {
-	TokenIDs         []int
-	Score            AnswerScore
-	Abstained        bool
-	RejectedTokenIDs []int
+	TokenIDs            []int
+	Score               AnswerScore
+	Abstained           bool
+	RejectedTokenIDs    []int
+	ConstraintSatisfied bool
 }
 
 func isStopToken(tokenID int, stopTokenIDs []int) bool {
@@ -77,15 +88,28 @@ func (model *Model) Answer(promptIDs []int, options GenerationOptions) Generated
 		panic(fmt.Sprintf("Model.Answer: ConfidenceTarget must be between 0 and 1, got %v", options.ConfidenceTarget))
 	}
 
+	sampler := NewSampler(options.samplingOptions(), options.Constraint)
+	sampler.StopTokenIDs = options.StopTokenIDs
+	sampler.RememberPrompt(promptIDs)
+	if options.Constraint != nil {
+		options.Constraint.Restart()
+	}
+
 	model.StartGenerating()
 	scores := model.Feed(promptIDs)
 	var generatedIDs []int
 	var tokenProbabilities []float64
 	for len(generatedIDs) < options.MaximumNewTokens {
-		nextID := PickToken(scores, options.Temperature)
+		nextID, found := sampler.PickToken(scores)
+		if !found {
+			break
+		}
 		tokenProbabilities = append(tokenProbabilities, activationfunction.Softmax(scores)[nextID])
 		if isStopToken(nextID, options.StopTokenIDs) {
 			break
+		}
+		if err := sampler.AcceptToken(nextID); err != nil {
+			panic(fmt.Sprintf("Model.Answer: the sampler picked a token its constraint refuses: %v", err))
 		}
 		generatedIDs = append(generatedIDs, nextID)
 		if len(generatedIDs) < options.MaximumNewTokens {
@@ -94,6 +118,7 @@ func (model *Model) Answer(promptIDs []int, options GenerationOptions) Generated
 	}
 
 	answer := GeneratedAnswer{TokenIDs: generatedIDs, Score: scoreFromProbabilities(tokenProbabilities)}
+	answer.ConstraintSatisfied = options.Constraint == nil || options.Constraint.IsComplete()
 	if options.ConfidenceTarget > 0 && answer.Score.Probability < options.ConfidenceTarget {
 		answer.Abstained = true
 		answer.RejectedTokenIDs = generatedIDs

@@ -32,6 +32,14 @@ func main() {
 	checkpointFolder := flag.String("checkpoint", "", "folder to save checkpoints in, and to resume from if one is already there")
 	checkpointEvery := flag.Int("checkpoint-every", 100, "save a checkpoint every this many steps")
 	dropoutRate := flag.Float64("dropout", 0, "dropout on attention weights and on each block's outputs while training (0 = off, 0.1 is typical)")
+	tokenFilePath := flag.String("token-file", "", "keep the training characters in this file instead of in memory; built from -text the first time")
+	learningRate := flag.Float64("learning-rate", 0.003, "peak learning rate")
+	warmupSteps := flag.Int("warmup", -1, "warmup steps (-1 = a twentieth of -steps)")
+	decayToCosine := flag.Bool("cosine", true, "lower the learning rate along a cosine to a tenth of the peak by the last step")
+	clipNorm := flag.Float64("clip", 1, "largest gradient norm, bigger gradients are scaled down (0 = no clipping)")
+	tieWeights := flag.Bool("tie", false, "share one matrix between the character embedding and the output layer")
+	evaluationFraction := flag.Float64("eval-fraction", 0.05, "share of the characters held out for evaluation (0 = none)")
+	evaluateEvery := flag.Int("eval-every", 100, "evaluate the held-out characters every this many steps")
 	flag.Parse()
 
 	if *useGPU {
@@ -45,17 +53,25 @@ func main() {
 	}
 	fmt.Println("doing math on:", vectormath.CurrentBackend().Name())
 
-	text := builtInText
-	if *textPath != "" {
-		fileText, err := datafile.ReadTrainingText(*textPath, *textField)
-		if err != nil {
-			panic(err)
+	var vocabulary *embedding.Vocabulary
+	var tokenIDs []int
+	var tokenFile *datafile.TokenFile
+	if *tokenFilePath != "" {
+		vocabulary, tokenFile = openOrBuildCharacterTokenFile(*tokenFilePath, *textPath, *textField)
+		defer tokenFile.Close()
+	} else {
+		text := builtInText
+		if *textPath != "" {
+			fileText, err := datafile.ReadTrainingText(*textPath, *textField)
+			if err != nil {
+				panic(err)
+			}
+			text = fileText
 		}
-		text = fileText
+		characters := embedding.SplitIntoCharacters(text)
+		vocabulary = embedding.BuildVocabulary(characters)
+		tokenIDs = vocabulary.Encode(characters)
 	}
-	characters := embedding.SplitIntoCharacters(text)
-	vocabulary := embedding.BuildVocabulary(characters)
-	tokenIDs := vocabulary.Encode(characters)
 
 	settings := transformer.SmallSettings(vocabulary.Size())
 	settings.WindowSize = 16
@@ -71,15 +87,16 @@ func main() {
 	}
 	settings.ResidualDropout = *dropoutRate
 	settings.AttentionDropout = *dropoutRate
+	settings.TieOutputToEmbedding = *tieWeights
 
 	var chosenOptimizer optimizer.Resumable
 	switch *optimizerName {
 	case "adam":
-		chosenOptimizer = optimizer.NewAdam(0.003)
+		chosenOptimizer = optimizer.NewAdam(*learningRate)
 	case "adamw":
-		chosenOptimizer = optimizer.NewAdamW(0.003, 0.01)
+		chosenOptimizer = optimizer.NewAdamW(*learningRate, 0.01)
 	case "muon":
-		chosenOptimizer = optimizer.NewMuon(0.003)
+		chosenOptimizer = optimizer.NewMuon(*learningRate)
 	default:
 		panic("unknown optimizer " + *optimizerName + ", use adam, adamw or muon")
 	}
@@ -101,15 +118,33 @@ func main() {
 			fmt.Printf("resumed from %s after step %d\n", *checkpointFolder, stepsDone)
 		}
 	}
+	trainingTokenIDs, trainingTokenFile, evaluationSequences := holdOutEvaluationChunks(tokenIDs, tokenFile, *evaluationFraction, *chunkLength+1, 16)
 	fmt.Println("model:", model.Describe())
-	fmt.Printf("text: %d characters, %d different ones, batches of %d chunks\n", len(characters), vocabulary.Size(), *batchSize)
+	fmt.Printf("text: %d training characters, %d held-out chunks, %d different characters, batches of %d chunks\n", countTrainingTokens(trainingTokenIDs, trainingTokenFile), len(evaluationSequences), vocabulary.Size(), *batchSize)
+
+	if *warmupSteps < 0 {
+		*warmupSteps = *steps / 20
+	}
+	trainerOptions := transformer.TrainerOptions{Schedule: optimizer.LearningRateSchedule{WarmupSteps: *warmupSteps}, MaximumGradientNorm: *clipNorm}
+	if *decayToCosine {
+		trainerOptions.Schedule = optimizer.WarmupThenCosine(*warmupSteps, *steps, 0.1)
+	}
+	trainer, err := transformer.NewTrainer(model, chosenOptimizer, trainerOptions)
+	if err != nil {
+		panic(err)
+	}
+	trainer.SetStepsTaken(firstStep - 1)
 
 	startTime := time.Now()
 	for step := firstStep; step <= *steps; step++ {
-		chunks := transformer.RandomChunks(tokenIDs, *chunkLength+1, *batchSize)
-		loss := model.TrainBatch(chunks, chosenOptimizer)
+		chunks := randomTrainingChunks(trainingTokenIDs, trainingTokenFile, *chunkLength+1, *batchSize)
+		learningRate := trainer.LearningRate()
+		loss := trainer.TrainBatch(chunks)
 		if step%50 == 0 || step == firstStep {
-			fmt.Printf("step %4d  loss %.4f  (%s)\n", step, loss, time.Since(startTime).Round(time.Millisecond))
+			fmt.Printf("step %4d  loss %.4f  learning rate %.2e  gradient norm %.3f  (%s)\n", step, loss, learningRate, trainer.LastGradientNorm(), time.Since(startTime).Round(time.Millisecond))
+		}
+		if len(evaluationSequences) > 0 && *evaluateEvery > 0 && (step%*evaluateEvery == 0 || step == *steps) {
+			fmt.Printf("step %4d  evaluation loss %.4f\n", step, trainer.EvaluationLoss(evaluationSequences))
 		}
 		if *checkpointFolder != "" && (step%*checkpointEvery == 0 || step == *steps) {
 			if err := model.SaveCheckpoint(*checkpointFolder, chosenOptimizer, step); err != nil {

@@ -5,9 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"github.com/javanhut/GoTransformers/chat"
+	"github.com/javanhut/GoTransformers/constrained"
 	"github.com/javanhut/GoTransformers/gpu"
 	"github.com/javanhut/GoTransformers/lowprecision"
 	"github.com/javanhut/GoTransformers/pretrained"
+	"github.com/javanhut/GoTransformers/transformer"
 	"github.com/javanhut/GoTransformers/vectormath"
 	"os"
 	"strings"
@@ -22,6 +24,16 @@ func main() {
 	topProbability := flag.Float64("top-p", 0.9, "only sample from the most likely tokens that add up to this probability")
 	maximumTokens := flag.Int("max-tokens", 256, "longest reply in tokens")
 	useGPU := flag.Bool("gpu", false, "use a GPU through Vulkan if one is found")
+	topK := flag.Int("top-k", 0, "only sample from this many most likely tokens (0 keeps them all)")
+	minimumProbability := flag.Float64("min-p", 0, "drop tokens less likely than this fraction of the most likely token")
+	typicalProbability := flag.Float64("typical", 0, "locally typical sampling: keep the most typical tokens that add up to this probability (0 turns it off)")
+	repetitionPenalty := flag.Float64("repetition-penalty", 1, "divide the scores of recently seen tokens by this (1 turns it off)")
+	frequencyPenalty := flag.Float64("frequency-penalty", 0, "subtract this times the number of times a token was recently seen")
+	presencePenalty := flag.Float64("presence-penalty", 0, "subtract this from every recently seen token")
+	penaltyWindow := flag.Int("penalty-window", 64, "how many recent tokens the penalties look at (0 looks at all of them)")
+	penalizePrompt := flag.Bool("penalize-prompt", false, "let the penalties also count tokens of the conversation so far")
+	seed := flag.Int64("seed", -1, "random seed for reproducible sampling (-1 picks a different one every run)")
+	forceJSON := flag.Bool("json", false, "force every reply to be valid JSON")
 	flag.Parse()
 
 	if *modelFolder == "" {
@@ -55,6 +67,23 @@ func main() {
 	}
 	conversation := chat.NewConversation(model, textTokenizer, template, *systemPrompt)
 	options := chat.ReplyOptions{MaximumNewTokens: *maximumTokens, Temperature: *temperature, TopProbability: *topProbability}
+	options.Sampling = transformer.SamplingOptions{
+		TopK:               *topK,
+		MinimumProbability: *minimumProbability,
+		TypicalProbability: *typicalProbability,
+		RepetitionPenalty:  *repetitionPenalty,
+		FrequencyPenalty:   *frequencyPenalty,
+		PresencePenalty:    *presencePenalty,
+		PenaltyWindow:      *penaltyWindow,
+		PenalizePrompt:     *penalizePrompt,
+		UseRandomSeed:      *seed >= 0,
+		RandomSeed:         uint64(*seed),
+	}
+	if *forceJSON {
+		jsonSettings := constrained.DefaultJSONSettings()
+		jsonSettings.RequireObjectAtTopLevel = true
+		options.Constraint = constrained.NewJSONConstraint(chat.VocabularyBytes(textTokenizer), jsonSettings)
+	}
 
 	fmt.Printf("loaded %s (%v weights, %s chat template). Type a message, or an empty line to quit.\n", *modelFolder, precision, template.Style)
 	input := bufio.NewScanner(os.Stdin)
@@ -76,6 +105,9 @@ func main() {
 		if err != nil {
 			fmt.Println("\nerror:", err)
 			return
+		}
+		if options.Constraint != nil && !options.Constraint.IsComplete() {
+			fmt.Print("\n(the reply hit -max-tokens before the JSON was complete)")
 		}
 		replyTokens := len(textTokenizer.Encode(reply))
 		fmt.Printf("\n(%d tokens in %s, conversation so far: %d tokens)\n", replyTokens, time.Since(startTime).Round(time.Millisecond), tokensBefore+replyTokens)

@@ -50,6 +50,16 @@ func (embedding *Embedding) CompressTable(precision lowprecision.Precision) {
 	embedding.TableGradients = nil
 }
 
+func (embedding *Embedding) SetCompressedTable(rows *lowprecision.Rows) error {
+	if rows.NumberOfRows() != embedding.Table.Rows || rows.Width != embedding.Table.Columns {
+		return fmt.Errorf("embedding %q: got a %dx%d compressed table but the table is %dx%d", embedding.Name, rows.NumberOfRows(), rows.Width, embedding.Table.Rows, embedding.Table.Columns)
+	}
+	embedding.CompressedTable = rows
+	embedding.Table = vectormath.Matrix{Rows: embedding.Table.Rows, Columns: embedding.Table.Columns}
+	embedding.TableGradients = nil
+	return nil
+}
+
 func (embedding *Embedding) TableBytes() int {
 	if embedding.IsCompressed() {
 		return embedding.CompressedTable.BytesUsed()
@@ -123,7 +133,7 @@ func (embedding *Embedding) Backward(outputGradients vectormath.Matrix) {
 func (embedding *Embedding) Parameters() []parameter.Parameter {
 	if embedding.IsCompressed() {
 		return []parameter.Parameter{
-			{Name: embedding.Name + ".table", Rows: embedding.Table.Rows, Columns: embedding.Table.Columns, UseAdamW: true, ReadOnly: true},
+			{Name: embedding.Name + ".table", CompressedValues: embedding.CompressedTable, Rows: embedding.Table.Rows, Columns: embedding.Table.Columns, UseAdamW: true, ReadOnly: true},
 		}
 	}
 	return []parameter.Parameter{

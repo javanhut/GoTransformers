@@ -75,8 +75,6 @@ func gpuGradients(t *testing.T, trainer *Trainer) map[string][]float64 {
 		}
 		gradients[current.name] = downloaded
 	}
-	embeddingParameter := trainer.model.TokenEmbedding.Parameters()[0]
-	gradients[embeddingParameter.Name] = append([]float64(nil), embeddingParameter.Gradients()...)
 	return gradients
 }
 
@@ -307,7 +305,7 @@ func TestUnsupportedSettingsAreListed(t *testing.T) {
 	settings.WindowSize = 4
 	settings.TopK = 2
 	settings.UseAttentionSink = true
-	settings.ResidualDropout = 0.1
+	settings.MultiTokenPrediction = true
 	model, err := transformer.NewModel(settings)
 	if err != nil {
 		t.Fatal(err)
@@ -316,7 +314,7 @@ func TestUnsupportedSettingsAreListed(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error")
 	}
-	for _, expected := range []string{"WindowSize", "TopK", "UseAttentionSink", "ResidualDropout"} {
+	for _, expected := range []string{"WindowSize", "TopK", "UseAttentionSink", "MultiTokenPrediction"} {
 		if !strings.Contains(err.Error(), expected) {
 			t.Errorf("error %q does not mention %s", err, expected)
 		}

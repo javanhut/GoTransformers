@@ -18,6 +18,10 @@ layout(std430, set = 0, binding = 3) buffer AverageSquaredGradientBuffer {
     float averageSquaredGradients[];
 };
 
+layout(std430, set = 0, binding = 4) readonly buffer ClipBuffer {
+    float clipResult[];
+};
+
 layout(push_constant) uniform Settings {
     uint count;
     float learningRate;
@@ -34,7 +38,7 @@ void main() {
     if (index >= settings.count) {
         return;
     }
-    float gradient = gradients[index];
+    float gradient = gradients[index] * clipResult[0];
     float averageGradient = settings.momentumDecay * averageGradients[index] + (1.0 - settings.momentumDecay) * gradient;
     float averageSquaredGradient = settings.squaredGradientDecay * averageSquaredGradients[index] + (1.0 - settings.squaredGradientDecay) * gradient * gradient;
     averageGradients[index] = averageGradient;

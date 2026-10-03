@@ -21,6 +21,7 @@ type huggingFaceModel struct {
 	ContinuingSubwordPrefix *string         `json:"continuing_subword_prefix"`
 	EndOfWordSuffix         *string         `json:"end_of_word_suffix"`
 	IgnoreMerges            bool            `json:"ignore_merges"`
+	UnknownToken            *string         `json:"unk_token"`
 }
 
 type huggingFaceFile struct {
@@ -38,11 +39,18 @@ type huggingFacePreTokenizer struct {
 	Pattern          map[string]string `json:"pattern"`
 	Behavior         string            `json:"behavior"`
 	Invert           bool              `json:"invert"`
+	Replacement      string            `json:"replacement"`
+	PrependScheme    string            `json:"prepend_scheme"`
+	Split            *bool             `json:"split"`
 	PreTokenizers    []json.RawMessage `json:"pretokenizers"`
 }
 
 type huggingFaceNormalizer struct {
-	Type string `json:"type"`
+	Type        string            `json:"type"`
+	Normalizers []json.RawMessage `json:"normalizers"`
+	Prepend     string            `json:"prepend"`
+	Pattern     map[string]string `json:"pattern"`
+	Content     string            `json:"content"`
 }
 
 func isJSONNull(raw json.RawMessage) bool {
@@ -136,8 +144,15 @@ func LoadHuggingFace(path string) (*Tokenizer, error) {
 	if model.Type != "BPE" {
 		return nil, fmt.Errorf("%s: model type %q is not supported, only BPE is", path, model.Type)
 	}
-	if model.ByteFallback || (model.ContinuingSubwordPrefix != nil && *model.ContinuingSubwordPrefix != "") || (model.EndOfWordSuffix != nil && *model.EndOfWordSuffix != "") {
-		return nil, fmt.Errorf("%s: SentencePiece-style BPE (byte fallback, subword prefixes or suffixes, as in Llama 2 and Mistral) is not supported yet, only byte-level BPE (GPT-2, SmolLM2, Llama 3, Qwen 2)", path)
+	if (model.ContinuingSubwordPrefix != nil && *model.ContinuingSubwordPrefix != "") || (model.EndOfWordSuffix != nil && *model.EndOfWordSuffix != "") {
+		return nil, fmt.Errorf("%s: BPE with subword prefixes or suffixes is not supported, only byte-level BPE (GPT-2, SmolLM2, Llama 3, Qwen 2) and SentencePiece-style BPE (Llama 2, Mistral)", path)
+	}
+	if isSentencePieceStyle(file) {
+		tokenizer, err := sentencePieceFromHuggingFace(file)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		return tokenizer, nil
 	}
 	if !isJSONNull(file.Normalizer) {
 		var normalizer huggingFaceNormalizer

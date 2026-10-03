@@ -54,8 +54,8 @@ func ReadLlamaConfig(path string) (LlamaConfig, error) {
 }
 
 func (config LlamaConfig) Check() error {
-	if config.ModelType != "llama" && config.ModelType != "qwen2" {
-		return fmt.Errorf("model_type %q is not supported, only llama and qwen2 are", config.ModelType)
+	if config.ModelType != "llama" && config.ModelType != "qwen2" && config.ModelType != "mistral" {
+		return fmt.Errorf("model_type %q is not supported, only llama, mistral and qwen2 are", config.ModelType)
 	}
 	if config.HiddenSize < 1 || config.NumberOfLayers < 1 || config.NumberOfHeads < 1 || config.IntermediateSize < 1 || config.VocabularySize < 1 {
 		return fmt.Errorf("hidden_size, num_hidden_layers, num_attention_heads, intermediate_size and vocab_size must all be at least 1, got %d, %d, %d, %d and %d", config.HiddenSize, config.NumberOfLayers, config.NumberOfHeads, config.IntermediateSize, config.VocabularySize)
@@ -107,5 +107,6 @@ func (config LlamaConfig) Settings() transformer.Settings {
 		GroupSharingMode:        attention.BorrowKeysAndValues,
 		CachePrecision:          lowprecision.Float64,
 		NumberOfResidualStreams: 1,
+		TieOutputToEmbedding:    config.TieWordEmbeddings,
 	}
 }

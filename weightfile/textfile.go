@@ -12,6 +12,9 @@ func SaveText(path string, parameters []parameter.Parameter) error {
 	if err := checkNamesCanBeSaved(parameters); err != nil {
 		return err
 	}
+	if err := checkNothingIsCompressed(parameters); err != nil {
+		return err
+	}
 	file, err := os.Create(path)
 	if err != nil {
 		return err

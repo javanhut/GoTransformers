@@ -2,7 +2,7 @@
 
 Every package and its public API. Packages are imported as `github.com/javanhut/GoTransformers/<package>`. See [ARCHITECTURE.md](ARCHITECTURE.md) for how they fit together.
 
-**Contents:** [vectormath](#vectormath) · [parameter](#parameter) · [lowprecision](#lowprecision) · [activationfunction](#activationfunction) · [lossfunction](#lossfunction) · [dropout](#dropout) · [perceptron](#perceptron) · [normalization](#normalization) · [embedding](#embedding) · [feedforward](#feedforward) · [attention](#attention) · [mixtureofexperts](#mixtureofexperts) · [hyperconnection](#hyperconnection) · [optimizer](#optimizer) · [transformer](#transformer) · [chat](#chat) · [tokenizer](#tokenizer) · [safetensors](#safetensors) · [pretrained](#pretrained) · [weightfile](#weightfile) · [datafile](#datafile) · [gpu](#gpu) · [gputraining](#gputraining) · [gradientcheck](#gradientcheck)
+**Contents:** [vectormath](#vectormath) · [parameter](#parameter) · [lowprecision](#lowprecision) · [activationfunction](#activationfunction) · [lossfunction](#lossfunction) · [dropout](#dropout) · [perceptron](#perceptron) · [normalization](#normalization) · [embedding](#embedding) · [feedforward](#feedforward) · [attention](#attention) · [mixtureofexperts](#mixtureofexperts) · [hyperconnection](#hyperconnection) · [optimizer](#optimizer) · [transformer](#transformer) · [constrained](#constrained) · [training](#training) · [chat](#chat) · [tokenizer](#tokenizer) · [safetensors](#safetensors) · [pretrained](#pretrained) · [weightfile](#weightfile) · [datafile](#datafile) · [parquet](#parquet) · [compression](#compression) · [gpu](#gpu) · [gputraining](#gputraining) · [gradientcheck](#gradientcheck)
 
 Shape mistakes (wrong sizes, a missing setting, `Backward` before `Forward`) panic with a message saying exactly what didn't match. File problems return an `error`.
 
@@ -344,6 +344,20 @@ type Resumable interface { Optimizer; SaveState() State; RestoreState(State) err
 
 All of them are `Resumable`. Fields such as `LearningRate` can be changed between steps.
 
+**Learning rate schedules and clipping**
+
+| Name | What it does |
+|---|---|
+| `LearningRateSchedule{WarmupSteps, TotalSteps, DecaySteps, DecayShape, FinalFraction}` | `FractionAt(stepIndex)` gives the share of the peak learning rate for a step; the zero value keeps the rate constant |
+| `WarmupThenCosine(warmupSteps, totalSteps, finalFraction)` | linear warmup, then a cosine down to `finalFraction` of the peak |
+| `WarmupThenLinear(warmupSteps, totalSteps, finalFraction)` | linear warmup, then a straight line down |
+| `WarmupStableDecay(warmupSteps, totalSteps, decaySteps, finalFraction)` | warmup, hold the peak, then decay over the last `decaySteps` |
+| `schedule.Check()` | explains anything invalid |
+| `GradientNorm(parameters)`, `ClipGradients(parameters, maximumNorm)` | global gradient norm; clipping scales every gradient down so the norm is at most `maximumNorm` and returns the norm before clipping |
+| `LearningRates(optimizer)`, `SetLearningRates(optimizer, rates)`, `ScaleLearningRates(optimizer, peakRates, fraction)` | read and set every learning rate an optimizer has (Muon has two: its own and its AdamW) |
+
+You rarely call these yourself: `transformer.Trainer` and `gputraining.Trainer` apply the schedule and clipping on every step.
+
 ---
 
 ## transformer
@@ -361,6 +375,7 @@ All of them are `Resumable`. Fields such as `LearningRate` can be changed betwee
 | `NormalizeQueriesAndKeys`, `UseAttentionSink` | false, false | |
 | `UseRotaryPositions`, `RotaryDimensions`, `RotaryBase`, `RotateHalves` | true, 0, 0, false | |
 | `NormEpsilon` | 0 (1e-6) | for every RMSNorm |
+| `TieOutputToEmbedding` | false | the output layer reads the token embedding table instead of having its own weights (weight tying); saves `VocabularySize × VectorSize` parameters |
 | `WindowSize`, `FullAttentionEvery`, `TopK` | 0, 0, 0 | standard blocks; every `FullAttentionEvery`-th block ignores the window |
 | `BlocksPerKeyValueGroup`, `GroupSharingMode` | 1, `BorrowKeysAndValues` | groups of standard blocks sharing one cache |
 | `CompressionRate`, `HeavyCompressionRate` | 4, 16 | CSA and HCA |
@@ -380,7 +395,9 @@ All of them are `Resumable`. Fields such as `LearningRate` can be changed betwee
 | Function or method | What it does |
 |---|---|
 | `NewModel(settings)` | |
-| `model.Save(path)`, `LoadModel(path)` | weights at `path`, settings at `path.settings.json` |
+| `model.Save(path)`, `LoadModel(path)` | weights at `path`, settings at `path.settings.json`; loading finds out how the weights were stored |
+| `model.SaveWithPrecision(path, weightfile.Float32)` | plain weights stored as `Float64` (the default, exact), `Float32` or `BFloat16` (round to nearest even); compressed weights (Float32, Int8, FP4) are always saved still compressed, byte for byte, and load back compressed |
+| `model.SetWeightsAndCompressedWeights(savedValues, savedCompressedValues)` | like `SetWeights`, also installing compressed rows |
 | `model.SaveCheckpoint(folder, optimizer, stepsDone)`, `LoadCheckpoint(folder, optimizer)` | resume training exactly |
 | `model.Describe()`, `model.NumberOfParameters()`, `model.Parameters()` | |
 | `model.SetWeights(savedValues)`, `model.SetWeight(name, values)` | fill weights by name, compressed or not |
@@ -407,6 +424,26 @@ All of them are `Resumable`. Fields such as `LearningRate` can be changed betwee
 | `OneHotTargets(targetIDs, vocabularySize)` | |
 | `model.Forward(tokenIDs)`, `model.Backward(scoreGradients)` | the raw passes |
 
+**Trainer.** Wraps a model and an optimizer with a learning rate schedule, gradient clipping and evaluation:
+
+```go
+trainer, err := transformer.NewTrainer(model, optimizer.NewAdamW(0.003, 0.01), transformer.TrainerOptions{
+	Schedule:            optimizer.WarmupThenCosine(100, 5000, 0.1),
+	MaximumGradientNorm: 1,
+})
+loss := trainer.TrainBatch(chunks)
+```
+
+| Method | What it does |
+|---|---|
+| `NewTrainer(model, optimizer, TrainerOptions{Schedule, MaximumGradientNorm})` | `MaximumGradientNorm` 0 means no clipping |
+| `trainer.TrainBatch(sequences)`, `TrainOnExamples(examples)` | one optimizer step at the scheduled learning rate |
+| `trainer.EvaluationLoss(sequences)` | average next-token loss, no gradients, no dropout |
+| `trainer.LearningRate()` | the rate the next step will use |
+| `trainer.LastGradientNorm()` | the norm before clipping on the last step |
+| `trainer.StepsTaken()`, `SetStepsTaken(steps)` | set it when resuming from a checkpoint so the schedule continues |
+| `trainer.SaveModel(path)` | |
+
 ### Generating
 
 | Function or method | What it does |
@@ -419,6 +456,8 @@ All of them are `Resumable`. Fields such as `LearningRate` can be changed betwee
 | `model.SaveGenerationState(path)`, `LoadGenerationState(path)` | keep a processed prompt for later |
 | `model.ScoreAnswer(promptIDs, answerIDs)` | an `AnswerScore` |
 | `model.Answer(promptIDs, options)` | a `GeneratedAnswer`, abstaining below the confidence target |
+| `NewSampler(SamplingOptions, constraint)` | a `Sampler`: `PickToken(scores)`, `AcceptToken(id)`, `RememberPrompt(ids)`, `StopTokenIDs` |
+| `model.GenerateWithSampler(promptIDs, count, sampler)`, `ContinueGeneratingWithSampler(count, sampler)` | generate with penalties, sampling filters and a constraint |
 
 ```go
 type GenerationOptions struct {
@@ -427,6 +466,23 @@ type GenerationOptions struct {
 	StopTokenIDs     []int      // stop on any of these (not included in the answer)
 	ConfidenceTarget float64    // 0 = never abstain
 	AbstainTokenIDs  []int      // returned instead when confidence is too low
+	Sampling         SamplingOptions  // penalties and filters, below
+	Constraint       TokenConstraint  // for example constrained.NewJSONConstraint; nil = none
+}
+
+type SamplingOptions struct {
+	Temperature        float64  // 0 = most likely token (falls back to GenerationOptions.Temperature)
+	TopK               int      // 0 = off
+	TypicalProbability float64  // locally typical sampling; 0 or 1 = off
+	TopProbability     float64  // top-p; 0 or 1 = off
+	MinimumProbability float64  // min-p, a share of the top token's probability; 0 = off
+	RepetitionPenalty  float64  // divides positive scores of seen tokens, multiplies negative ones; 0 or 1 = off
+	FrequencyPenalty   float64  // minus this times how often a token was seen
+	PresencePenalty    float64  // minus this once for every seen token
+	PenaltyWindow      int      // how many recent tokens the penalties look at; 0 = all
+	PenalizePrompt     bool
+	UseRandomSeed      bool     // with RandomSeed: a private random stream, so runs repeat exactly
+	RandomSeed         uint64
 }
 
 type AnswerScore struct {
@@ -442,8 +498,11 @@ type GeneratedAnswer struct {
 	Score            AnswerScore
 	Abstained        bool
 	RejectedTokenIDs []int   // the guess, when it abstained
+	ConstraintSatisfied bool // the constraint says the output is complete
 }
 ```
+
+The sampler works in this order: penalties, the constraint's mask (stop tokens are only allowed once the constraint is complete), temperature and softmax over the allowed tokens, top-k, typical, top-p, min-p, then a draw. Because the softmax only covers allowed tokens, a constrained model always picks an allowed token, however unlikely.
 
 ### Parts
 
@@ -452,6 +511,61 @@ type GeneratedAnswer struct {
 | `Block` | `AttentionNorm`, `Attention`, `FeedForwardNorm`, `FeedForward`, and optional `AttentionConnection` / `FeedForwardConnection` for mHC |
 | `AttentionLayer`, `FeedForwardLayer` | interfaces a block's parts satisfy, so you can plug in your own |
 | `MultiTokenPredictor` | the extra block that predicts the token after next |
+
+---
+
+## constrained
+
+Keeps generated text valid: every token's bytes are run through a byte-level automaton, and tokens that would break the format are masked out before sampling. Masks are cached by automaton state, so a 49k-token vocabulary costs about 6 ms the first time a state is seen and under a microsecond after that. It does not import the tokenizer; give it the token bytes from `chat.VocabularyBytes`.
+
+| Name | What it does |
+|---|---|
+| `NewJSONConstraint(tokenBytes, JSONSettings)` | strict RFC 8259 JSON, including escapes, `\uXXXX`, numbers and UTF-8 split across tokens |
+| `JSONSettings{MaximumDepth, MaximumWhitespaceInARow, MaximumNumberLength, RequireObjectAtTopLevel}`, `DefaultJSONSettings()` | 0 = unlimited; defaults 16, 16, 32 |
+| `NewChoiceConstraint(tokenBytes, choices)` | the output must be exactly one of the strings |
+| `NewSchemaConstraint(tokenBytes, schema, settings)` | a JSON object with the given keys, in order, and value types; for tool calls |
+| `ObjectSchema(properties...)`, `Property{Name, Value}`, `StringSchema()`, `NumberSchema()`, `BooleanSchema()`, `EnumSchema(values...)`, `StringArraySchema()` | schema pieces |
+| `TokenConstraint` | `Restart()`, `IsTokenAllowed(id)`, `AllowedTokens()`, `AcceptToken(id)`, `AcceptText(text)`, `IsComplete()`, `Text()` |
+| `Automaton`, `NewTokenConstraint(tokenBytes, automaton)` | write your own format: `Clone()`, `AcceptByte(b)`, `IsComplete()`, `StateKey()` |
+
+```go
+toolCall, err := constrained.NewSchemaConstraint(chat.VocabularyBytes(modelTokenizer), constrained.ObjectSchema(
+	constrained.Property{Name: "name", Value: constrained.EnumSchema("get_weather")},
+	constrained.Property{Name: "arguments", Value: constrained.ObjectSchema(
+		constrained.Property{Name: "city", Value: constrained.StringSchema()})},
+), constrained.DefaultJSONSettings())
+reply, err := conversation.Reply("What's the weather in Paris?", chat.ReplyOptions{MaximumNewTokens: 100, Constraint: toolCall}, nil)
+```
+
+If `MaximumNewTokens` runs out first, the output is a valid beginning but not complete; `ConstraintSatisfied` says so. Schema keys are all required and in a fixed order.
+
+---
+
+## training
+
+A training loop that works with any trainer (`transformer.Trainer`, `gputraining.Trainer`, `gputraining.DataParallelTrainer`): it evaluates held-out data, saves the best model and can stop early.
+
+```go
+result, err := training.Loop{
+	Trainer:             trainer,
+	NumberOfSteps:       5000,
+	NextBatch:           func() [][]int { return transformer.RandomChunks(trainingIDs, 129, 16) },
+	EvaluationSequences: heldOutChunks,
+	EvaluateEvery:       200,
+	BestModelPath:       "best.weights",
+	OnEvaluation:        func(report training.EvaluationReport) { fmt.Println(report.Step, report.EvaluationLoss) },
+}.Run()
+```
+
+| Name | What it does |
+|---|---|
+| `Trainer` interface | `TrainBatch`, `EvaluationLoss`, `LearningRate`, `LastGradientNorm`, `StepsTaken`, `SaveModel` |
+| `Loop{Trainer, NumberOfSteps, NextBatch, EvaluationSequences, EvaluationBatchSize, EvaluateEvery, BestModelPath, StopAfterEvaluationsWithoutImproving, OnStep, OnEvaluation}` | `Run()` returns `Result{StepsTaken, LastLoss, BestEvaluationLoss, BestStep, StoppedEarly}`; evaluation also runs after the last step |
+| `StepReport{Step, Loss, LearningRate, GradientNorm, StepTime}` | passed to `OnStep` |
+| `EvaluationReport{Step, EvaluationLoss, BestEvaluationLoss, BestStep, IsBest, SavedBestModel, StepsWithoutImproving, AverageTrainingLoss, TrainingStepsSinceLast}` | passed to `OnEvaluation` |
+| `EvaluationLossInBatches(trainer, sequences, batchSize)` | |
+
+A loss that becomes NaN or infinite stops the loop with an error naming the step.
 
 ---
 
@@ -470,7 +584,8 @@ Chat templates and multi-turn conversations for instruct models.
 | `NewConversation(model, tokenizer, template, systemPrompt)` | an empty system prompt uses the model's default |
 | `conversation.Reply(userText, options, onNewText)` | generates a reply, calling `onNewText` with each new piece of text as it appears; only new tokens are processed each turn |
 | `conversation.Messages`, `TokensReprocessed()` | the history, and how many tokens had to be processed from scratch |
-| `ReplyOptions{MaximumNewTokens, Temperature, TopProbability}`, `DefaultReplyOptions()` | defaults 256, 0.2, 0.9 |
+| `ReplyOptions{MaximumNewTokens, Temperature, TopProbability, Sampling, Constraint}`, `DefaultReplyOptions()` | defaults 256, 0.2, 0.9; `Sampling` and `Constraint` as in `transformer.GenerationOptions` |
+| `VocabularyBytes(tokenizer)` | every token's bytes (`TokenBytes`), the input the `constrained` package needs |
 
 Templates other than ChatML and Llama 3 (for example Mistral's `[INST]`) are refused with an error.
 
@@ -494,16 +609,21 @@ model.TrainOnExamples(examples, adamW)
 
 ## tokenizer
 
-Byte-level BPE, so no text is ever unknown.
+Byte-level BPE (GPT-2, Llama 3, Qwen, SmolLM2) and SentencePiece (Llama 2, Mistral, TinyLlama, Phi-3), both in the same `*tokenizer.Tokenizer`, so everything else works the same with either.
 
 | Function or method | What it does |
 |---|---|
-| `Train(text, vocabularySize)` | learn merges from text |
-| `LoadHuggingFace(path)` | read a `tokenizer.json` (GPT-2, Llama 3, Qwen 2 style byte-level BPE) |
-| `LoadFromFile(path)`, `t.SaveToFile(path)` | this library's own format |
-| `t.Encode(text)`, `t.Decode(ids)` | |
+| `Train(text, vocabularySize)` | learn byte-level merges from text |
+| `LoadHuggingFace(path)` | read a `tokenizer.json`: byte-level BPE, or SentencePiece-style BPE with `byte_fallback` and a Metaspace or Prepend + Replace normalizer |
+| `LoadSentencePiece(path)` | read a SentencePiece `tokenizer.model` (BPE or Unigram) |
+| `LoadFromFile(path)`, `t.SaveToFile(path)` | this library's own format, for both kinds |
+| `t.Encode(text)`, `t.Decode(ids)` | safe to call from several goroutines at once |
+| `t.Kind()` | `ByteLevelBPE`, `SentencePieceBPE` or `SentencePieceUnigram` |
+| `t.TokenBytes(id)` | the exact bytes a token adds in the middle of generated text; nil for special tokens |
 | `t.AddSpecialToken(content)`, `t.SpecialTokenID(content)` | tokens such as `<end>` that are never split |
 | `t.VocabularySize()`, `t.TokenID(byteLevelToken)`, `t.TokenText(id)` | |
+
+SentencePiece encoding matches SentencePiece and llama.cpp (checked against llama.cpp's own test cases): a leading "▁" at the start and after each special token, spaces become "▁", the highest-scoring merge goes first, and characters missing from the vocabulary become `<0xXX>` byte tokens (or `<unk>` without them). Unigram models that need a precompiled normalization map (T5) are refused with an error.
 
 ---
 
@@ -529,8 +649,10 @@ Reads F64, F32, F16 and BF16.
 | `ReadLlamaConfig(path)`, `config.Check()`, `config.Settings()` | |
 | `LoadLlamaWeights(model, config, folder)` | fill an existing model |
 | `OurParameterName(huggingFaceName)` | e.g. `model.layers.0.self_attn.q_proj.weight` → `block1.attention.query.weights` |
+| `LoadTokenizer(folder)` | `tokenizer.json` if the folder has one, otherwise `tokenizer.model` |
+| `SaveModelAndTokenizer(path, model, tokenizer, storagePrecision)`, `LoadModelAndTokenizer(path)` | convert a downloaded model once (for example to Int8) and load it quickly afterwards |
 
-Supports `model_type` `llama` and `qwen2`, single or sharded safetensors, and tied embeddings. RoPE scaling, a separate `head_dim`, MLP biases and sliding-window configs are refused with a clear error.
+Supports `model_type` `llama`, `mistral` and `qwen2`, single or sharded safetensors, and tied embeddings (loaded with `TieOutputToEmbedding`, so the table is kept once). Mistral's `sliding_window` is ignored, which matches Mistral v0.1 up to 4096 tokens. RoPE scaling, a separate `head_dim`, MLP biases and sliding-window configs are refused with a clear error.
 
 ---
 
@@ -538,10 +660,14 @@ Supports `model_type` `llama` and `qwen2`, single or sharded safetensors, and ti
 
 | Function | What it does |
 |---|---|
-| `SaveBinary(path, parameters)`, `SaveText(path, parameters)` | |
-| `ReadBinary(path)`, `ReadText(path)` | `map[name][]float64` |
+| `SaveBinary(path, parameters)`, `SaveText(path, parameters)` | `SaveBinary` stores Float64 |
+| `SaveBinaryWithPrecision(path, parameters, precision)` | `StoragePrecision` is `Float64`, `Float32` or `BFloat16`; `precision.Round(value)` gives a value as it will come back |
+| `ReadBinary(path)`, `ReadText(path)` | `map[name][]float64`; compressed entries are expanded |
+| `ReadBinaryKeepingCompressed(path)` | plain values plus compressed rows, untouched |
 | `LoadBinary(path, parameters)`, `LoadText(path, parameters)` | fill only the given parameters, so you can load one layer |
-| `CopyInto(parameters, savedValues)` | checks every name and size before copying anything |
+| `CopyInto(parameters, savedValues)`, `CopyIntoKeepingCompressed(parameters, savedValues, savedCompressedValues)` | checks every name and size before copying anything |
+
+Files saved at Float64 with nothing compressed keep the original format byte for byte; anything else uses version 2, which records how each parameter is stored. Text files can't hold compressed weights. Checkpoints and optimizer state are always float64 so training resumes exactly.
 
 ---
 
@@ -568,6 +694,55 @@ JSONL (one JSON object per line):
 | `record.Pair(inputField, targetField)` | uses the named fields when the line has them, otherwise recognises `instruction`/`input`/`output` (Alpaca, the `input` is added after the instruction), `prompt`/`completion`, `question`/`answer`, `input`/`target` and `input`/`output` |
 
 Blank lines and Windows line endings are fine, lines can be any length, and errors name the file and line number, plus the fields a line does have when one is missing.
+
+**Token files and streaming datasets.** Large corpora don't have to fit in memory. `TokenizeIntoTokenFile` reads a `TextSource` one document at a time, tokenizes on several goroutines and writes the token IDs in order to a compact file (2 bytes per token for vocabularies up to 65536, otherwise 4). `OpenTokenFile` reads chunks straight from disk, one `ReadAt` per chunk.
+
+| Function or method | What it does |
+|---|---|
+| `CreateTokenFile(path, vocabularySize)` | a `TokenFileWriter`: `WriteTokens(ids)`, `EndDocument()`, `Close()`, `Discard()`; the file only appears, complete, on `Close` |
+| `WriteTokenFile(path, tokenIDs, vocabularySize)` | in one go |
+| `OpenTokenFile(path)` | a `TokenFile`: `NumberOfTokens()`, `VocabularySize()`, `ReadTokens(start, count)`, `RandomChunk(length)`, `RandomChunks(length, count)`, `SetRandomSeed(seed)`, `Close()` |
+| `tokenFile.Split(evaluationFraction)`, `SplitLast(numberOfTokens)`, `View(start, count)` | views over the same file; training chunks never overlap evaluation chunks |
+| `tokenFile.Chunks(length)`, `ChunksWithStep(length, step)` | walk in order: `Next()`, `NextBatch(count)`, `Restart()` (`io.EOF` at the end) |
+| `TextSource` | anything with `NextText() (string, error)`, `io.EOF` at the end |
+| `OpenTrainingTextSource(pathPatterns, textField)` | the streaming twin of `ReadTrainingText`, over files and globs |
+| `OpenPlainTextSource(path, options)`, `OpenJSONLTextSource(path, field)`, `OpenJSONLRecordSource(path, recordToText)`, `OpenParquetTextSource(path, column)`, `OpenMultipleFileTextSource(paths, openOneFile)`, `NewSliceTextSource(texts)` | plain text in pieces or paragraphs, JSONL by field or through your own function (for example a chat template), Parquet one row group at a time |
+| `TokenizeIntoTokenFile(source, newTokenizeFunction, path, vocabularySize, options)` | `StreamingTokenizeOptions{NumberOfWorkers, DocumentsPerBatch, AppendEndOfDocumentToken, EndOfDocumentTokenID, MarkDocumentEnds, ReportProgress}` |
+
+```go
+source, _ := datafile.OpenTrainingTextSource([]string{"corpus/*.jsonl"}, "text")
+datafile.TokenizeIntoTokenFile(source, datafile.SameTokenizeFunctionForEveryWorker(textTokenizer.Encode), "corpus.tokens",
+	textTokenizer.VocabularySize(), datafile.StreamingTokenizeOptions{AppendEndOfDocumentToken: true, EndOfDocumentTokenID: endID})
+
+tokenFile, _ := datafile.OpenTokenFile("corpus.tokens")
+trainingPart, evaluationPart, _ := tokenFile.Split(0.01)
+chunks, _ := trainingPart.RandomChunks(129, 16)
+```
+
+---
+
+## parquet
+
+Reads Parquet files, such as Hugging Face dataset shards, in pure Go. It reads one row group at a time, so huge files can be streamed. Supports data pages v1 and v2, dictionary pages, PLAIN and dictionary encodings, optional (nullable) flat columns, and UNCOMPRESSED, SNAPPY, GZIP and ZSTD compression.
+
+| Function or method | What it does |
+|---|---|
+| `Open(path)`, `file.Close()` | |
+| `file.ColumnNames()`, `file.Columns()` | `Column{Name, PhysicalType, Optional, Repeated}` |
+| `file.NumberOfRows()`, `NumberOfRowGroups()`, `NumberOfRowsInRowGroup(rowGroupIndex)` | |
+| `file.ReadStringColumn(rowGroupIndex, column)` | BYTE_ARRAY and FIXED_LEN_BYTE_ARRAY |
+| `file.ReadInt64Column`, `ReadFloat64Column`, `ReadBoolColumn` | same arguments |
+| `file.ReadNullColumn(rowGroupIndex, column)` | which rows were null; nulls otherwise come back as `""`, `0` or `false` so rows stay lined up |
+| `file.ForEachRowGroupOfStrings(column, handle)`, `ReadAllStrings(column)`, `ReadAllInt64s`, `ReadAllFloat64s` | |
+
+`datafile.ReadParquetTexts(path, column)` and `datafile.OpenParquetTextSource(path, column)` connect it to training, and `-text data.parquet -field text` works in the example programs. Repeated or nested columns (lists such as `messages`), DELTA and BYTE_STREAM_SPLIT encodings, INT96, LZ4, Brotli and encrypted files return an error.
+
+## compression
+
+| Function | What it does |
+|---|---|
+| `DecompressSnappy(compressedBytes)` | the raw snappy block format |
+| `DecompressZstd(compressedBytes)` | zstd frames, including several frames and skippable frames; checks checksums; no dictionaries |
 
 ---
 
@@ -606,17 +781,22 @@ Trains a `transformer.Model` on the GPU in float32, one whole batch at a time.
 | Name | What it does |
 |---|---|
 | `NewTrainer(device, model, options)` | uploads the model; returns an error listing every setting it doesn't support |
-| `DefaultTrainerOptions(learningRate, weightDecay)` | AdamW with betas 0.9 / 0.95, the same as `optimizer.NewAdamW` |
+| `DefaultTrainerOptions(learningRate, weightDecay)` | AdamW with betas 0.9 / 0.95, the same as `optimizer.NewAdamW`; also set `options.Schedule` (an `optimizer.LearningRateSchedule`) and `options.MaximumGradientNorm` (0 = no clipping) |
 | `trainer.TrainBatch(sequences)` | learn every next token; sequences may differ in length |
 | `trainer.TrainOnExamples(examples)` | learn only the answers, like `model.TrainOnExamples` |
+| `trainer.EvaluationLoss(sequences)`, `EvaluationLossOnExamples(examples)` | forward pass only, no dropout, nothing changes |
+| `trainer.LearningRate()`, `LastGradientNorm()` | the rate the next step uses; the global gradient norm before clipping on the last step |
 | `trainer.CopyWeightsToModel()` | bring the weights back to the CPU model, to generate or save |
+| `trainer.SaveModel(path)` | copy the weights back and save |
+| `trainer.SaveStateToFile(path)`, `LoadStateFromFile(path)` | AdamW moments and step count, to resume a run exactly (save the model too) |
 | `trainer.UploadWeightsFromModel()`, `StepsTaken()`, `Close()` | |
+| `NewDataParallelTrainer(devices, model, options)` | the same methods spread over several GPUs: each GPU takes part of the batch, the gradients are added together on the CPU, and every GPU applies the same update. `ResynchronizeEvery` (default 200 steps) copies the first GPU's weights to the others in case different GPUs round differently |
 
-**Supported:** standard attention, rotary (any dimensions, base, pairing) or sine-wave positions, grouped-query attention, SwiGLU (optionally clamped), biases, `NormEpsilon`.
+**Supported:** standard attention, rotary (any dimensions, base, pairing) or sine-wave positions, grouped-query attention, SwiGLU (optionally clamped), biases, `NormEpsilon`, weight tying, residual and attention dropout, freezing, learning rate schedules and gradient clipping.
 
-**Not yet supported:** sliding windows, top-k, key/value sharing, attention sinks, query/key norm, low-rank queries, keys as values, compressed attention, mixture-of-experts, mHC, multi-token prediction, compressed weights, adapters and dropout.
+**Not yet supported:** sliding windows, top-k, key/value sharing, attention sinks, query/key norm, low-rank queries, keys as values, compressed attention, mixture-of-experts, mHC, multi-token prediction, compressed weights and adapters.
 
-The token embedding and its AdamW stay on the CPU; everything else runs on the GPU.
+Everything runs on the GPU, the token embedding too. The lookup is a gather kernel, and its gradient is added up per token without atomics, so a whole training step is one GPU submission. The gradient norm is worked out on the GPU and the AdamW kernel reads the clipping scale from there.
 
 ---
 

@@ -60,6 +60,18 @@ func (layer *Layer) CompressWeights(precision lowprecision.Precision) {
 	vectormath.MarkWeightsChanged()
 }
 
+func (layer *Layer) SetCompressedWeights(rows *lowprecision.Rows) error {
+	if rows.NumberOfRows() != layer.Weights.Rows || rows.Width != layer.Weights.Columns {
+		return fmt.Errorf("layer %q: got %dx%d compressed weights but it holds %dx%d", layer.Name, rows.NumberOfRows(), rows.Width, layer.Weights.Rows, layer.Weights.Columns)
+	}
+	layer.CompressedWeights = rows
+	layer.Weights = vectormath.Matrix{Rows: layer.Weights.Rows, Columns: layer.Weights.Columns}
+	layer.WeightGradients = nil
+	layer.BiasGradients = nil
+	vectormath.MarkWeightsChanged()
+	return nil
+}
+
 func (layer *Layer) DecompressWeights() {
 	if !layer.IsCompressed() {
 		return
@@ -199,7 +211,7 @@ func (layer *Layer) Parameters() []parameter.Parameter {
 	switch {
 	case layer.IsCompressed():
 		parameters = []parameter.Parameter{
-			{Name: layer.Name + ".weights", Rows: layer.Weights.Rows, Columns: layer.Weights.Columns, ReadOnly: true},
+			{Name: layer.Name + ".weights", CompressedValues: layer.CompressedWeights, Rows: layer.Weights.Rows, Columns: layer.Weights.Columns, ReadOnly: true},
 			{Name: layer.Name + ".biases", Values: layer.Biases, ReadOnly: true},
 		}
 	case layer.FreezeBase:

@@ -27,7 +27,8 @@ Each package only imports packages from the layers above it.
    embedding            token embeddings, vocabulary, sine-wave positions
    gradientcheck        finite-difference checker for any Forward/Backward pair
    dropout              random masking while training, off otherwise
-   optimizer            SGD, momentum, Adam, AdamW, Muon, saveable state
+   optimizer            SGD, momentum, Adam, AdamW, Muon, saveable state, learning rate schedules, gradient clipping
+   compression          pure-Go snappy and zstd decoders
 
 3. transformer parts
    feedforward          gated feed-forward (SwiGLU, GeGLU, ReGLU, clamped SwiGLU)
@@ -36,17 +37,19 @@ Each package only imports packages from the layers above it.
    hyperconnection      mHC residual streams
 
 4. models
-   transformer          Settings, Block, Model, training, generation, checkpoints
+   transformer          Settings, Block, Model, Trainer, generation, checkpoints
+   training             a training loop with held-out evaluation, best-model saving and early stopping, for any trainer
 
 5. outside world
-   tokenizer            byte-level BPE, Hugging Face tokenizer.json
+   tokenizer            byte-level BPE and SentencePiece (BPE, Unigram), Hugging Face tokenizer.json, tokenizer.model
    chat                 chat templates (ChatML, Llama 3), multi-turn conversations, conversation datasets
    safetensors          read and write safetensors files
-   pretrained           load Llama and Qwen 2 models from Hugging Face folders
-   weightfile           save and load named weights as text or binary
-   datafile             CSV, TSV, JSONL, text, question/answer pairs
+   pretrained           load Llama, Mistral and Qwen 2 models from Hugging Face folders
+   weightfile           save and load named weights as text or binary, at float64, float32 or bfloat16, compressed rows as they are
+   parquet              read flat Parquet columns one row group at a time
+   datafile             CSV, TSV, JSONL, text, Parquet, question/answer pairs, streaming text sources, on-disk token files
    gpu                  Vulkan backend for vectormath, and general GPU buffers, programs and recorders
-   gputraining          float32 training of standard models entirely on the GPU
+   gputraining          float32 training of standard models entirely on the GPU, on one GPU or data-parallel on several
 ```
 
 ## Data conventions
@@ -186,6 +189,10 @@ Both run the same steps:
 4. Update every parameter whose name doesn't start with a prefix passed to `Freeze`.
 5. Nudge the expert-balance biases.
 
+`transformer.Trainer` runs the same steps with two more between 3 and 4: it clips the gradients to `MaximumGradientNorm` (one global norm over every trainable parameter), and sets the optimizer's learning rate to the schedule's fraction of the peak rate for this step. The peak rates are read from the optimizer when the trainer is made, so Muon's two rates keep their ratio. `training.Loop` drives any trainer: it asks for a batch, takes a step, and every `EvaluateEvery` steps measures the held-out loss and saves the model if it is the best so far.
+
+**Weight tying.** With `TieOutputToEmbedding` the output layer's `Weights` is the embedding's `Table`: the same slice, because the table is vocabulary × vector and the output weights are outputs × inputs, which is the same layout. The output layer still computes its own weight gradients in `Backward`; the model adds them into the table's gradients right after, and zeroes them. `Parameters()` lists only `tokens.table`, so optimizers and files see one matrix.
+
 The loss counts only the positions predicting answer tokens, which is how answer-only fine-tuning works; plain text counts every position.
 
 **Chat datasets.** `chat.ExamplesFromConversations` turns each assistant reply into one example. The prompt is `template.Format(messagesBeforeTheReply, true)`, the same text `Conversation.Reply` feeds the model, so training and chatting see identical tokens. A test checks that prompt + answer tokens equal the tokens of the whole formatted conversation. The answer ends with the end-of-turn token, which is what teaches the model to stop. A conversation with several replies gives several examples, each with the whole history before its reply as the prompt.
@@ -215,22 +222,27 @@ The loss counts only the positions predicting answer tokens, which is how answer
 - **Weights live on the GPU** as `gpu.Buffer`s, along with AdamW's running averages. They come back to the CPU model only when you call `CopyWeightsToModel`.
 - **A batch is one big computation.** Sequences are padded to the same length and stacked, so every matrix multiply covers the whole batch. The padding is masked out of the loss, and causal attention means it can't affect real tokens.
 - **One submit per step.** The forward pass, backward pass, loss and AdamW updates of every layer are recorded with a `gpu.Recorder` and sent to the GPU together, avoiding a round trip after every operation.
-- **About 15 small shaders** (`gputraining/shaders`): strided batched matrix multiply, bias and column sums, RMSNorm forward and backward, RoPE, causal softmax and its backward pass, summing grouped-query heads, SwiGLU forward and backward, residual add, masked cross-entropy, and AdamW. Each is tested against a float64 CPU version.
-- **The embedding stays on the CPU.** Looking up token vectors and scattering their gradients back are cheap there, so the table and its AdamW stay on the CPU, and only the batch's vectors and their gradients cross over each step.
+- **About 20 small shaders** (`gputraining/shaders`): strided batched matrix multiply, bias and column sums, RMSNorm forward and backward, RoPE, causal softmax and its backward pass, summing grouped-query heads, SwiGLU forward and backward, residual add, masked cross-entropy, embedding gather and gradient scatter, squared sums and the clipping scale, dropout, and AdamW. Each is tested against a float64 CPU version.
+- **The embedding is on the GPU too.** The token IDs go up as floats and a gather kernel builds the first block's input (adding sine-wave positions when rotary positions are off). For the backward pass the CPU sorts the batch's rows by token once, and the scatter kernel gives each (token, column) pair one thread that adds up that token's rows, so no two threads write the same value and no atomics are needed. With weight tying the output layer's weights are the table buffer: the output layer's backward writes the table gradients and the scatter adds to them.
+- **Clipping without a round trip.** One kernel adds up the squares of every trainable gradient buffer into partial sums, a second turns them into the norm and the scale `min(1, maximum / norm)`, and the AdamW kernel multiplies each gradient by that scale as it reads it. The norm is read back with the loss.
+- **Dropout without stored masks.** The mask comes from a hash of a per-step seed, the block, the place and the element index, so the backward pass rebuilds exactly the same mask instead of keeping it in memory. Attention dropout keeps the undropped probabilities for the softmax backward pass and rebuilds the dropped ones in a shared buffer.
+- **Several GPUs.** `DataParallelTrainer` keeps one `Trainer` per GPU, all starting from the same weights. Each step splits the batch, each GPU computes its gradients (the loss weights use the whole batch's size, so the gradients simply add up), the CPU adds them together, and every GPU uploads the sum and runs the same clipping and AdamW. A periodic copy of the first GPU's weights keeps them from drifting apart.
 - **Checked against the CPU path:** one GPU step matches `transformer.Model.TrainBatch` with `optimizer.AdamW`. The loss agrees to about 1e-7 relative, and gradients to about 2e-6 of the largest gradient.
 
-On the Intel Meteor Lake integrated GPU, a 6.9M-parameter model trains at about 6,900 tokens/s, against 268 for the CPU path.
+On the Intel Meteor Lake integrated GPU, a 6.9M-parameter model trained at about 6,900 tokens/s with the embedding on the CPU, against 268 for the CPU path. Moving the embedding onto the GPU took a 6-block, 256-wide model from 7,800 to 10,400 tokens/s on the same GPU.
 
 ## File formats
 
 | File | Written by | Format |
 |---|---|---|
 | `name.weights` | `weightfile.SaveBinary`, `model.Save` | `GOTRANSFORMERS-WEIGHTS-1`, then for each parameter: name length, name, value count, little-endian float64 values |
+| `name.weights` | `model.SaveWithPrecision`, or any model with compressed weights | `GOTRANSFORMERS-WEIGHTS-2`: after each name, one byte for how it is stored (float64, float32, bfloat16, or compressed rows with their precision, shape, values and scales) |
+| token file | `datafile.CreateTokenFile`, `TokenizeIntoTokenFile` | 64-byte header (`GOTOKENS`, version, bytes per token, vocabulary size, token count, document count, document table offset), then 2- or 4-byte little-endian token IDs, then optional document ends |
 | `name.txt` | `weightfile.SaveText` | `name count` then the values as text, separated by spaces |
 | `name.weights.settings.json` | `model.Save` | the model's `Settings` as JSON, with readable names for enums |
 | checkpoint folder | `model.SaveCheckpoint` | `model.weights` (+ settings), `optimizer.state` (gob), `progress.json` |
 | generation state | `model.SaveGenerationState` | gob, with format tag `gotransformers-generation-1` and a model fingerprint |
-| tokenizer | `tokenizer.SaveToFile` | text, format tag `gotransformers-tokenizer-1` |
+| tokenizer | `tokenizer.SaveToFile` | text, format tag `gotransformers-tokenizer-2` (adds the kind and a SentencePiece section; `-1` files still load) |
 | vocabulary | `Vocabulary.SaveToFile` | one quoted token per line |
 | `*.safetensors` | `safetensors.Write` | the standard safetensors layout (F32 or F64 out; F64, F32, F16 and BF16 in) |
 | `*.jsonl`, `*.ndjson` | read only (`datafile`, `chat`) | one JSON object per line: `{"text"}`, pairs (`prompt`/`completion`, `instruction`/`input`/`output`, `question`/`answer`, `input`/`target`) or conversations (`messages`, ShareGPT `conversations`) |

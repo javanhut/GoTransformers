@@ -22,6 +22,11 @@ import (
 //go:generate glslc --target-env=vulkan1.0 -O shaders/crossentropy.comp -o shaders/crossentropy.spv
 //go:generate glslc --target-env=vulkan1.0 -O shaders/adamw.comp -o shaders/adamw.spv
 //go:generate glslc --target-env=vulkan1.0 -O shaders/sumgroups.comp -o shaders/sumgroups.spv
+//go:generate glslc --target-env=vulkan1.0 -O shaders/embeddinggather.comp -o shaders/embeddinggather.spv
+//go:generate glslc --target-env=vulkan1.0 -O shaders/embeddingscatter.comp -o shaders/embeddingscatter.spv
+//go:generate glslc --target-env=vulkan1.0 -O shaders/squaredsums.comp -o shaders/squaredsums.spv
+//go:generate glslc --target-env=vulkan1.0 -O shaders/clipscale.comp -o shaders/clipscale.spv
+//go:generate glslc --target-env=vulkan1.0 -O shaders/dropout.comp -o shaders/dropout.spv
 
 //go:embed shaders/matrixmultiply.spv
 var matrixMultiplyShader []byte
@@ -68,6 +73,21 @@ var adamWShader []byte
 //go:embed shaders/sumgroups.spv
 var sumGroupsShader []byte
 
+//go:embed shaders/embeddinggather.spv
+var embeddingGatherShader []byte
+
+//go:embed shaders/embeddingscatter.spv
+var embeddingScatterShader []byte
+
+//go:embed shaders/squaredsums.spv
+var squaredSumsShader []byte
+
+//go:embed shaders/clipscale.spv
+var clipScaleShader []byte
+
+//go:embed shaders/dropout.spv
+var dropoutShader []byte
+
 type kernels struct {
 	matrixMultiply        *gpu.Program
 	add                   *gpu.Program
@@ -84,6 +104,11 @@ type kernels struct {
 	crossEntropy          *gpu.Program
 	adamW                 *gpu.Program
 	sumGroups             *gpu.Program
+	embeddingGather       *gpu.Program
+	embeddingScatter      *gpu.Program
+	squaredSums           *gpu.Program
+	clipScale             *gpu.Program
+	dropout               *gpu.Program
 }
 
 func loadKernels(device *gpu.Device) (*kernels, error) {
@@ -108,8 +133,13 @@ func loadKernels(device *gpu.Device) (*kernels, error) {
 		{&loaded.swigluForward, "swigluForward", swigluForwardShader, 3, 2},
 		{&loaded.swigluBackward, "swigluBackward", swigluBackwardShader, 5, 2},
 		{&loaded.crossEntropy, "crossEntropy", crossEntropyShader, 5, 2},
-		{&loaded.adamW, "adamW", adamWShader, 4, 8},
+		{&loaded.adamW, "adamW", adamWShader, 5, 8},
 		{&loaded.sumGroups, "sumGroups", sumGroupsShader, 2, 4},
+		{&loaded.embeddingGather, "embeddingGather", embeddingGatherShader, 4, 4},
+		{&loaded.embeddingScatter, "embeddingScatter", embeddingScatterShader, 5, 2},
+		{&loaded.squaredSums, "squaredSums", squaredSumsShader, 2, 3},
+		{&loaded.clipScale, "clipScale", clipScaleShader, 2, 2},
+		{&loaded.dropout, "dropout", dropoutShader, 1, 4},
 	}
 	for _, program := range programs {
 		created, err := device.NewProgram(program.name, program.shader, program.numberOfBuffers, program.pushConstantWords)
@@ -128,6 +158,7 @@ func (loaded *kernels) free() {
 		loaded.rmsNormForward, loaded.rmsNormBackward, loaded.rmsNormWeightGradient,
 		loaded.rotary, loaded.causalSoftmax, loaded.softmaxBackward,
 		loaded.swigluForward, loaded.swigluBackward, loaded.crossEntropy, loaded.adamW, loaded.sumGroups,
+		loaded.embeddingGather, loaded.embeddingScatter, loaded.squaredSums, loaded.clipScale, loaded.dropout,
 	} {
 		if program != nil {
 			program.Free()
@@ -336,15 +367,57 @@ type adamWStep struct {
 	averageSquaredGradientCorrection float64
 }
 
-func (loaded *kernels) adamWUpdate(recorder *gpu.Recorder, values *gpu.Buffer, gradients *gpu.Buffer, averageGradients *gpu.Buffer, averageSquaredGradients *gpu.Buffer, count int, step adamWStep, shrinkFactor float64) {
+func (loaded *kernels) adamWUpdate(recorder *gpu.Recorder, values *gpu.Buffer, gradients *gpu.Buffer, averageGradients *gpu.Buffer, averageSquaredGradients *gpu.Buffer, clipResult *gpu.Buffer, count int, step adamWStep, shrinkFactor float64) {
 	words := []uint32{
 		uint32(count), gpu.Float(step.learningRate), gpu.Float(step.momentumDecay), gpu.Float(step.squaredGradientDecay),
 		gpu.Float(step.epsilon), gpu.Float(step.averageGradientCorrection), gpu.Float(step.averageSquaredGradientCorrection), gpu.Float(shrinkFactor),
 	}
-	runElementwise(recorder, loaded.adamW, count, words, values, gradients, averageGradients, averageSquaredGradients)
+	runElementwise(recorder, loaded.adamW, count, words, values, gradients, averageGradients, averageSquaredGradients, clipResult)
 }
 
 func (loaded *kernels) sumHeadGroups(recorder *gpu.Recorder, perQueryHead *gpu.Buffer, perKeyValueHead *gpu.Buffer, rows int, keyValueHeads int, groupSize int, headSize int) {
 	count := rows * keyValueHeads * headSize
 	runElementwise(recorder, loaded.sumGroups, count, []uint32{uint32(rows), uint32(keyValueHeads), uint32(groupSize), uint32(headSize)}, perQueryHead, perKeyValueHead)
+}
+
+func (loaded *kernels) gatherEmbeddings(recorder *gpu.Recorder, table *gpu.Buffer, tokenIDs *gpu.Buffer, positionVectors *gpu.Buffer, outputs *gpu.Buffer, rows int, vectorSize int, sequenceLength int) {
+	addPositions := positionVectors != nil
+	if !addPositions {
+		positionVectors = table
+	}
+	words := []uint32{uint32(rows), uint32(vectorSize), uint32(sequenceLength), boolWord(addPositions)}
+	runElementwise(recorder, loaded.embeddingGather, rows*vectorSize, words, table, tokenIDs, positionVectors, outputs)
+}
+
+func (loaded *kernels) scatterEmbeddingGradients(recorder *gpu.Recorder, rowGradients *gpu.Buffer, uniqueTokenIDs *gpu.Buffer, rowStarts *gpu.Buffer, sortedRows *gpu.Buffer, tableGradients *gpu.Buffer, numberOfUniqueTokens int, vectorSize int) {
+	if numberOfUniqueTokens == 0 {
+		return
+	}
+	words := []uint32{uint32(numberOfUniqueTokens), uint32(vectorSize)}
+	runElementwise(recorder, loaded.embeddingScatter, numberOfUniqueTokens*vectorSize, words, rowGradients, uniqueTokenIDs, rowStarts, sortedRows, tableGradients)
+}
+
+const squaredSumGroupsPerBuffer = 64
+
+func squaredSumGroupsFor(count int) int {
+	return max(1, min(squaredSumGroupsPerBuffer, (count+255)/256))
+}
+
+func (loaded *kernels) squaredSumsInto(recorder *gpu.Recorder, values *gpu.Buffer, partialSums *gpu.Buffer, firstPartial int, count int) int {
+	numberOfGroups := squaredSumGroupsFor(count)
+	words := []uint32{uint32(count), uint32(firstPartial), uint32(numberOfGroups)}
+	recorder.Run(loaded.squaredSums, uint32(numberOfGroups), 1, 1, words, values, partialSums)
+	return numberOfGroups
+}
+
+func (loaded *kernels) computeClipScale(recorder *gpu.Recorder, partialSums *gpu.Buffer, clipResult *gpu.Buffer, numberOfPartials int, maximumNorm float64) {
+	recorder.Run(loaded.clipScale, 1, 1, 1, []uint32{uint32(numberOfPartials), gpu.Float(maximumNorm)}, partialSums, clipResult)
+}
+
+func (loaded *kernels) dropOut(recorder *gpu.Recorder, values *gpu.Buffer, count int, seed uint32, rate float64) {
+	if rate <= 0 {
+		return
+	}
+	words := []uint32{uint32(count), seed, gpu.Float(rate), gpu.Float(1 / (1 - rate))}
+	runElementwise(recorder, loaded.dropout, count, words, values)
 }
