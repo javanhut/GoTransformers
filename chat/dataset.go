@@ -15,6 +15,16 @@ var roleNames = map[string]string{
 	"gpt":       "assistant",
 	"model":     "assistant",
 	"bot":       "assistant",
+	// Tool/function results fed back into the conversation. These are context for
+	// the next assistant turn, not learning targets (ExamplesFromConversation only
+	// learns "assistant" turns), and the templates render the "tool" role like any
+	// other header.
+	"tool":              "tool",
+	"function":          "tool",
+	"observation":       "tool",
+	"tool_response":     "tool",
+	"function_response": "tool",
+	"ipython":           "tool",
 }
 
 func messageFromJSON(value any) (Message, error) {
