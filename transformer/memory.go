@@ -2,11 +2,11 @@ package transformer
 
 import (
 	"fmt"
-	"transformer/attention"
-	"transformer/dropout"
-	"transformer/lowprecision"
-	"transformer/perceptron"
-	"transformer/vectormath"
+	"github.com/javanhut/GoTransformers/attention"
+	"github.com/javanhut/GoTransformers/dropout"
+	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/perceptron"
+	"github.com/javanhut/GoTransformers/vectormath"
 )
 
 func (model *Model) allLayers() []*perceptron.Layer {

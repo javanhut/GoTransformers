@@ -1,14 +1,14 @@
 package gputraining
 
 import (
+	"github.com/javanhut/GoTransformers/gpu"
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/transformer"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"strings"
 	"testing"
-	"transformer/gpu"
-	"transformer/optimizer"
-	"transformer/parameter"
-	"transformer/transformer"
-	"transformer/vectormath"
 )
 
 const testLearningRate = 0.001

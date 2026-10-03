@@ -2,9 +2,9 @@ package weightfile
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"strings"
-	"transformer/parameter"
-	"transformer/vectormath"
 )
 
 func checkNamesCanBeSaved(parameters []parameter.Parameter) error {

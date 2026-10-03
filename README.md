@@ -7,7 +7,21 @@ A deep learning and transformer library written in pure Go, built for making and
 - **Built from research.** The architecture pieces come from recent papers (DeepSeek-V4, DeepSeek-V4.1, and others), scaled down so they make sense for small local models.
 - **Readable.** Long, plain names and simple loops, so you can read a function and say what it does and what shape the data has.
 
-The Go module is named `transformer`, so packages are imported as `transformer/attention`, `transformer/optimizer`, and so on.
+## Installing
+
+```
+go get github.com/javanhut/GoTransformers@latest
+```
+
+Then import the packages you need:
+
+```go
+import (
+	"github.com/javanhut/GoTransformers/chat"
+	"github.com/javanhut/GoTransformers/pretrained"
+	"github.com/javanhut/GoTransformers/transformer"
+)
+```
 
 ## What's in it
 
@@ -24,7 +38,7 @@ The Go module is named `transformer`, so packages are imported as `transformer/a
 
 ## Getting started
 
-You need Go 1.27 or newer.
+You need Go 1.27.1 or newer.
 
 ```
 go test ./...

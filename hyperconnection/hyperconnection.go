@@ -2,11 +2,11 @@ package hyperconnection
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/normalization"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
-	"transformer/activationfunction"
-	"transformer/normalization"
-	"transformer/parameter"
-	"transformer/vectormath"
 )
 
 const startingGate = 0.01

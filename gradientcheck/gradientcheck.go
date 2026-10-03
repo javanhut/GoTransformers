@@ -2,9 +2,9 @@ package gradientcheck
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
-	"transformer/parameter"
-	"transformer/vectormath"
 )
 
 type ForwardFn func(inputs vectormath.Matrix) vectormath.Matrix

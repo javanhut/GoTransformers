@@ -1,14 +1,14 @@
 package pretrained
 
 import (
+	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/safetensors"
 	"math"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
-	"transformer/lowprecision"
-	"transformer/safetensors"
 )
 
 func downloadedModelFolder() string {

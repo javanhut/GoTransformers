@@ -1,14 +1,14 @@
 package transformer
 
 import (
-	"transformer/dropout"
-	"transformer/feedforward"
-	"transformer/hyperconnection"
-	"transformer/mixtureofexperts"
-	"transformer/normalization"
-	"transformer/parameter"
-	"transformer/perceptron"
-	"transformer/vectormath"
+	"github.com/javanhut/GoTransformers/dropout"
+	"github.com/javanhut/GoTransformers/feedforward"
+	"github.com/javanhut/GoTransformers/hyperconnection"
+	"github.com/javanhut/GoTransformers/mixtureofexperts"
+	"github.com/javanhut/GoTransformers/normalization"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/perceptron"
+	"github.com/javanhut/GoTransformers/vectormath"
 )
 
 type AttentionLayer interface {

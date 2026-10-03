@@ -1,10 +1,10 @@
 package attention
 
 import (
+	"github.com/javanhut/GoTransformers/dropout"
+	"github.com/javanhut/GoTransformers/gradientcheck"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"testing"
-	"transformer/dropout"
-	"transformer/gradientcheck"
-	"transformer/vectormath"
 )
 
 func freezeMasks(weightsDropout *dropout.Dropout, forward func(vectormath.Matrix) vectormath.Matrix, inputs vectormath.Matrix) {

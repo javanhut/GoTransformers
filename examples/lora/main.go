@@ -3,16 +3,16 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/javanhut/GoTransformers/chat"
+	"github.com/javanhut/GoTransformers/datafile"
+	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/pretrained"
 	"os"
 	"runtime"
 	"runtime/debug"
 	"strings"
 	"time"
-	"transformer/chat"
-	"transformer/datafile"
-	"transformer/lowprecision"
-	"transformer/optimizer"
-	"transformer/pretrained"
 )
 
 var builtInPairs = []datafile.Pair{

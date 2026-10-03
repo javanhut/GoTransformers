@@ -4,9 +4,9 @@ import (
 	"bufio"
 	"encoding/binary"
 	"fmt"
+	"github.com/javanhut/GoTransformers/parameter"
 	"io"
 	"os"
-	"transformer/parameter"
 )
 
 const binaryFileMarker = "GOTRANSFORMERS-WEIGHTS-1"

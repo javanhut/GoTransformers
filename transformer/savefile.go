@@ -3,8 +3,8 @@ package transformer
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/javanhut/GoTransformers/weightfile"
 	"os"
-	"transformer/weightfile"
 )
 
 func settingsPath(path string) string {

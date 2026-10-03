@@ -1,10 +1,10 @@
 package gpu
 
 import (
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"sync"
 	"testing"
-	"transformer/vectormath"
 )
 
 func openForTest(t *testing.T, forceStagingBuffers bool) *Device {

@@ -2,8 +2,8 @@ package lowprecision
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
-	"transformer/vectormath"
 )
 
 type Precision int

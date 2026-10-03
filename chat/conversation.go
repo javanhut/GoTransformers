@@ -2,10 +2,10 @@ package chat
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/tokenizer"
+	"github.com/javanhut/GoTransformers/transformer"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"strings"
-	"transformer/tokenizer"
-	"transformer/transformer"
-	"transformer/vectormath"
 	"unicode/utf8"
 )
 

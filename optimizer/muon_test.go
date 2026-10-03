@@ -1,10 +1,10 @@
 package optimizer
 
 import (
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"testing"
-	"transformer/parameter"
-	"transformer/vectormath"
 )
 
 func largestDistanceFromIdentity(matrix vectormath.Matrix) float64 {

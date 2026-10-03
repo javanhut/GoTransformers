@@ -1,9 +1,9 @@
 package dropout
 
 import (
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"testing"
-	"transformer/vectormath"
 )
 
 func TestZeroRateMeansNoDropout(t *testing.T) {

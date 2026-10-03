@@ -1,13 +1,13 @@
 package gpu
 
 import (
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/perceptron"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"sync"
 	"testing"
-	"transformer/activationfunction"
-	"transformer/optimizer"
-	"transformer/parameter"
-	"transformer/perceptron"
-	"transformer/vectormath"
 )
 
 func openWithResidentWeights(t *testing.T, forceStagingBuffers bool) *Device {

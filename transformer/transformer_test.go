@@ -1,17 +1,17 @@
 package transformer
 
 import (
+	"github.com/javanhut/GoTransformers/attention"
+	"github.com/javanhut/GoTransformers/gradientcheck"
+	"github.com/javanhut/GoTransformers/lossfunction"
+	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"path/filepath"
 	"reflect"
 	"testing"
-	"transformer/attention"
-	"transformer/gradientcheck"
-	"transformer/lossfunction"
-	"transformer/lowprecision"
-	"transformer/optimizer"
-	"transformer/parameter"
-	"transformer/vectormath"
 )
 
 func tinySettings() Settings {

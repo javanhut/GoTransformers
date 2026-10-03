@@ -2,7 +2,7 @@ package lowprecision
 
 import (
 	"fmt"
-	"transformer/vectormath"
+	"github.com/javanhut/GoTransformers/vectormath"
 )
 
 type Rows struct {

@@ -3,14 +3,14 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/javanhut/GoTransformers/gpu"
+	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/pretrained"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"os"
 	"runtime"
 	"runtime/debug"
 	"time"
-	"transformer/gpu"
-	"transformer/lowprecision"
-	"transformer/pretrained"
-	"transformer/vectormath"
 )
 
 func memoryInUse() float64 {

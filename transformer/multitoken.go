@@ -1,15 +1,15 @@
 package transformer
 
 import (
-	"transformer/activationfunction"
-	"transformer/attention"
-	"transformer/dropout"
-	"transformer/embedding"
-	"transformer/feedforward"
-	"transformer/normalization"
-	"transformer/parameter"
-	"transformer/perceptron"
-	"transformer/vectormath"
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/attention"
+	"github.com/javanhut/GoTransformers/dropout"
+	"github.com/javanhut/GoTransformers/embedding"
+	"github.com/javanhut/GoTransformers/feedforward"
+	"github.com/javanhut/GoTransformers/normalization"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/perceptron"
+	"github.com/javanhut/GoTransformers/vectormath"
 )
 
 type MultiTokenPredictor struct {

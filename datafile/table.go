@@ -3,11 +3,11 @@ package datafile
 import (
 	"encoding/csv"
 	"fmt"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
-	"transformer/vectormath"
 )
 
 type Table struct {

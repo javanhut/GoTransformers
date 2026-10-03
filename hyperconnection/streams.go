@@ -2,7 +2,7 @@ package hyperconnection
 
 import (
 	"fmt"
-	"transformer/vectormath"
+	"github.com/javanhut/GoTransformers/vectormath"
 )
 
 func ExpandToStreams(inputs vectormath.Matrix, numberOfStreams int) vectormath.Matrix {

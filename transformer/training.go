@@ -2,12 +2,12 @@ package transformer
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"strings"
-	"transformer/activationfunction"
-	"transformer/optimizer"
-	"transformer/parameter"
-	"transformer/vectormath"
 )
 
 type Example struct {

@@ -3,8 +3,8 @@ package gputraining
 import (
 	_ "embed"
 	"fmt"
+	"github.com/javanhut/GoTransformers/gpu"
 	"math"
-	"transformer/gpu"
 )
 
 //go:generate glslc --target-env=vulkan1.0 -O shaders/matrixmultiply.comp -o shaders/matrixmultiply.spv

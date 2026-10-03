@@ -1,15 +1,15 @@
 package chat
 
 import (
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/tokenizer"
+	"github.com/javanhut/GoTransformers/transformer"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
-	"transformer/optimizer"
-	"transformer/tokenizer"
-	"transformer/transformer"
 )
 
 func writeJSONL(t *testing.T, contents string) string {

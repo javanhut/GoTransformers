@@ -1,10 +1,10 @@
 package normalization
 
 import (
+	"github.com/javanhut/GoTransformers/gradientcheck"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"testing"
-	"transformer/gradientcheck"
-	"transformer/vectormath"
 )
 
 func TestRMSNormGradients(t *testing.T) {

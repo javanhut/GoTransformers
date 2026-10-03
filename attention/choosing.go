@@ -1,8 +1,8 @@
 package attention
 
 import (
+	"github.com/javanhut/GoTransformers/vectormath"
 	"sort"
-	"transformer/vectormath"
 )
 
 func (attention *SelfAttention) visiblePositions(position int, numberOfPositions int) (int, int) {

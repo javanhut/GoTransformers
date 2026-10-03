@@ -2,15 +2,15 @@ package main
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/attention"
+	"github.com/javanhut/GoTransformers/embedding"
+	"github.com/javanhut/GoTransformers/lossfunction"
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/perceptron"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"strings"
-	"transformer/activationfunction"
-	"transformer/attention"
-	"transformer/embedding"
-	"transformer/lossfunction"
-	"transformer/optimizer"
-	"transformer/parameter"
-	"transformer/perceptron"
-	"transformer/vectormath"
 )
 
 type tinyModel struct {

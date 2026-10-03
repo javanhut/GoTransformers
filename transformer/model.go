@@ -2,18 +2,18 @@ package transformer
 
 import (
 	"fmt"
-	"transformer/activationfunction"
-	"transformer/attention"
-	"transformer/dropout"
-	"transformer/embedding"
-	"transformer/feedforward"
-	"transformer/hyperconnection"
-	"transformer/lowprecision"
-	"transformer/mixtureofexperts"
-	"transformer/normalization"
-	"transformer/parameter"
-	"transformer/perceptron"
-	"transformer/vectormath"
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/attention"
+	"github.com/javanhut/GoTransformers/dropout"
+	"github.com/javanhut/GoTransformers/embedding"
+	"github.com/javanhut/GoTransformers/feedforward"
+	"github.com/javanhut/GoTransformers/hyperconnection"
+	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/mixtureofexperts"
+	"github.com/javanhut/GoTransformers/normalization"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/perceptron"
+	"github.com/javanhut/GoTransformers/vectormath"
 )
 
 type Model struct {

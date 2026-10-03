@@ -5,11 +5,11 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
+	"github.com/javanhut/GoTransformers/attention"
+	"github.com/javanhut/GoTransformers/lowprecision"
 	"hash/fnv"
 	"math"
 	"os"
-	"transformer/attention"
-	"transformer/lowprecision"
 )
 
 const generationFileFormat = "gotransformers-generation-1"

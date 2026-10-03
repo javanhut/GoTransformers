@@ -1,9 +1,9 @@
 package feedforward
 
 import (
+	"github.com/javanhut/GoTransformers/gradientcheck"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"testing"
-	"transformer/gradientcheck"
-	"transformer/vectormath"
 )
 
 func TestGatedFeedForwardGradients(t *testing.T) {

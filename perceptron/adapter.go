@@ -2,10 +2,10 @@ package perceptron
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/dropout"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
-	"transformer/dropout"
-	"transformer/parameter"
-	"transformer/vectormath"
 )
 
 type LowRankAdapter struct {

@@ -1,8 +1,8 @@
 package attention
 
 import (
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
-	"transformer/vectormath"
 )
 
 const rotaryBase = 10000

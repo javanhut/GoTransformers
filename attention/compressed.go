@@ -2,15 +2,15 @@ package attention
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/dropout"
+	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/normalization"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/perceptron"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"sort"
-	"transformer/activationfunction"
-	"transformer/dropout"
-	"transformer/lowprecision"
-	"transformer/normalization"
-	"transformer/parameter"
-	"transformer/perceptron"
-	"transformer/vectormath"
 )
 
 type CompressedOptions struct {

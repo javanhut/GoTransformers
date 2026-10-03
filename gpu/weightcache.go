@@ -2,7 +2,7 @@ package gpu
 
 import (
 	"fmt"
-	"transformer/vectormath"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"unsafe"
 )
 

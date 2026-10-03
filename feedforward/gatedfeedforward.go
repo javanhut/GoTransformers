@@ -2,10 +2,10 @@ package feedforward
 
 import (
 	"fmt"
-	"transformer/activationfunction"
-	"transformer/parameter"
-	"transformer/perceptron"
-	"transformer/vectormath"
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/perceptron"
+	"github.com/javanhut/GoTransformers/vectormath"
 )
 
 type GatedFeedForward struct {

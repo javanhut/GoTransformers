@@ -1,6 +1,6 @@
 # Reference
 
-Every package and its public API. Packages are imported as `transformer/<package>`. See [ARCHITECTURE.md](ARCHITECTURE.md) for how they fit together.
+Every package and its public API. Packages are imported as `github.com/javanhut/GoTransformers/<package>`. See [ARCHITECTURE.md](ARCHITECTURE.md) for how they fit together.
 
 **Contents:** [vectormath](#vectormath) · [parameter](#parameter) · [lowprecision](#lowprecision) · [activationfunction](#activationfunction) · [lossfunction](#lossfunction) · [dropout](#dropout) · [perceptron](#perceptron) · [normalization](#normalization) · [embedding](#embedding) · [feedforward](#feedforward) · [attention](#attention) · [mixtureofexperts](#mixtureofexperts) · [hyperconnection](#hyperconnection) · [optimizer](#optimizer) · [transformer](#transformer) · [chat](#chat) · [tokenizer](#tokenizer) · [safetensors](#safetensors) · [pretrained](#pretrained) · [weightfile](#weightfile) · [datafile](#datafile) · [gpu](#gpu) · [gputraining](#gputraining) · [gradientcheck](#gradientcheck)
 

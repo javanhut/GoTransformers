@@ -4,14 +4,14 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"github.com/javanhut/GoTransformers/chat"
+	"github.com/javanhut/GoTransformers/gpu"
+	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/pretrained"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"os"
 	"strings"
 	"time"
-	"transformer/chat"
-	"transformer/gpu"
-	"transformer/lowprecision"
-	"transformer/pretrained"
-	"transformer/vectormath"
 )
 
 func main() {

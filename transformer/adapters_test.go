@@ -1,15 +1,15 @@
 package transformer
 
 import (
+	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
-	"transformer/lowprecision"
-	"transformer/optimizer"
-	"transformer/parameter"
-	"transformer/vectormath"
 )
 
 func sameScores(t *testing.T, name string, first vectormath.Matrix, second vectormath.Matrix, allowed float64) {

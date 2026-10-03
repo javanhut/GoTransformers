@@ -2,12 +2,12 @@ package transformer
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/embedding"
+	"github.com/javanhut/GoTransformers/hyperconnection"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"sort"
 	"strings"
-	"transformer/activationfunction"
-	"transformer/embedding"
-	"transformer/hyperconnection"
-	"transformer/vectormath"
 )
 
 func (model *Model) StartGenerating() {

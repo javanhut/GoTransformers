@@ -3,18 +3,18 @@ package pretrained
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/safetensors"
+	"github.com/javanhut/GoTransformers/tokenizer"
+	"github.com/javanhut/GoTransformers/transformer"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
-	"transformer/lowprecision"
-	"transformer/parameter"
-	"transformer/safetensors"
-	"transformer/tokenizer"
-	"transformer/transformer"
-	"transformer/vectormath"
 )
 
 var layerTensorNames = map[string]string{

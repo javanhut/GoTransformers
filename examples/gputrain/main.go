@@ -3,15 +3,15 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/javanhut/GoTransformers/datafile"
+	"github.com/javanhut/GoTransformers/embedding"
+	"github.com/javanhut/GoTransformers/gpu"
+	"github.com/javanhut/GoTransformers/gputraining"
+	"github.com/javanhut/GoTransformers/tokenizer"
+	"github.com/javanhut/GoTransformers/transformer"
 	"os"
 	"strings"
 	"time"
-	"transformer/datafile"
-	"transformer/embedding"
-	"transformer/gpu"
-	"transformer/gputraining"
-	"transformer/tokenizer"
-	"transformer/transformer"
 )
 
 const builtInText = `the quick brown fox jumps over the lazy dog. the lazy dog sleeps in the sun. the quick brown fox runs into the woods. `

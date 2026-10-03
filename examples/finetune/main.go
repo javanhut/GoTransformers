@@ -3,12 +3,12 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/javanhut/GoTransformers/datafile"
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/tokenizer"
+	"github.com/javanhut/GoTransformers/transformer"
 	"strings"
 	"time"
-	"transformer/datafile"
-	"transformer/optimizer"
-	"transformer/tokenizer"
-	"transformer/transformer"
 )
 
 var builtInPairs = []datafile.Pair{

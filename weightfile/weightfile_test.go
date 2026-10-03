@@ -1,12 +1,12 @@
 package weightfile
 
 import (
+	"github.com/javanhut/GoTransformers/parameter"
 	"math"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
-	"transformer/parameter"
 )
 
 func makeParameters() []parameter.Parameter {

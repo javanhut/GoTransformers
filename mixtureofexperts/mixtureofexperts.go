@@ -2,13 +2,13 @@ package mixtureofexperts
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/feedforward"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/perceptron"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"sort"
-	"transformer/activationfunction"
-	"transformer/feedforward"
-	"transformer/parameter"
-	"transformer/perceptron"
-	"transformer/vectormath"
 )
 
 type MixtureOfExperts struct {

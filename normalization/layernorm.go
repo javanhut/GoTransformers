@@ -2,9 +2,9 @@ package normalization
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
-	"transformer/parameter"
-	"transformer/vectormath"
 )
 
 type LayerNorm struct {

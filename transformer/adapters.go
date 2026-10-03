@@ -3,12 +3,12 @@ package transformer
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/javanhut/GoTransformers/dropout"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/perceptron"
+	"github.com/javanhut/GoTransformers/weightfile"
 	"os"
 	"strings"
-	"transformer/dropout"
-	"transformer/parameter"
-	"transformer/perceptron"
-	"transformer/weightfile"
 )
 
 func (model *Model) adapterLayers() []*perceptron.Layer {

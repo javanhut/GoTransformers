@@ -2,8 +2,8 @@ package transformer
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/activationfunction"
 	"math"
-	"transformer/activationfunction"
 )
 
 type AnswerScore struct {

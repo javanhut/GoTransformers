@@ -2,7 +2,7 @@ package dropout
 
 import (
 	"fmt"
-	"transformer/vectormath"
+	"github.com/javanhut/GoTransformers/vectormath"
 )
 
 type Dropout struct {

@@ -2,11 +2,11 @@ package gpu
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"math/bits"
 	"runtime"
 	"sync"
-	"transformer/vectormath"
 	"unsafe"
 )
 

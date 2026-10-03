@@ -1,9 +1,9 @@
 package lowprecision
 
 import (
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"testing"
-	"transformer/vectormath"
 )
 
 func TestRowsKeepValuesCloseEnough(t *testing.T) {

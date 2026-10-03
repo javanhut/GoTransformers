@@ -1,17 +1,17 @@
 package perceptron
 
 import (
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/dropout"
+	"github.com/javanhut/GoTransformers/gradientcheck"
+	"github.com/javanhut/GoTransformers/lossfunction"
+	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"reflect"
 	"testing"
-	"transformer/activationfunction"
-	"transformer/dropout"
-	"transformer/gradientcheck"
-	"transformer/lossfunction"
-	"transformer/lowprecision"
-	"transformer/optimizer"
-	"transformer/parameter"
-	"transformer/vectormath"
 )
 
 func expectPanic(t *testing.T, name string, function func()) {

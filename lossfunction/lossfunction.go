@@ -2,9 +2,9 @@ package lossfunction
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
-	"transformer/activationfunction"
-	"transformer/vectormath"
 )
 
 type LossFn func(predictions vectormath.Matrix, targets vectormath.Matrix) float64

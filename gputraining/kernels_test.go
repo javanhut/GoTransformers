@@ -1,14 +1,14 @@
 package gputraining
 
 import (
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/gpu"
+	"github.com/javanhut/GoTransformers/normalization"
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"testing"
-	"transformer/activationfunction"
-	"transformer/gpu"
-	"transformer/normalization"
-	"transformer/optimizer"
-	"transformer/parameter"
-	"transformer/vectormath"
 )
 
 type kernelTest struct {

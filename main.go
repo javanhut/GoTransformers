@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
-	"transformer/activationfunction"
-	"transformer/perceptron"
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/perceptron"
 )
 
 func main() {

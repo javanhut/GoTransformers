@@ -2,14 +2,14 @@ package main
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/lossfunction"
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/perceptron"
+	"github.com/javanhut/GoTransformers/vectormath"
+	"github.com/javanhut/GoTransformers/weightfile"
 	"os"
 	"path/filepath"
-	"transformer/activationfunction"
-	"transformer/lossfunction"
-	"transformer/optimizer"
-	"transformer/perceptron"
-	"transformer/vectormath"
-	"transformer/weightfile"
 )
 
 func main() {

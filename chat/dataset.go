@@ -2,9 +2,9 @@ package chat
 
 import (
 	"fmt"
-	"transformer/datafile"
-	"transformer/tokenizer"
-	"transformer/transformer"
+	"github.com/javanhut/GoTransformers/datafile"
+	"github.com/javanhut/GoTransformers/tokenizer"
+	"github.com/javanhut/GoTransformers/transformer"
 )
 
 var roleNames = map[string]string{

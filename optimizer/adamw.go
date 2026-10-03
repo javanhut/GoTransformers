@@ -1,9 +1,9 @@
 package optimizer
 
 import (
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
-	"transformer/parameter"
-	"transformer/vectormath"
 )
 
 type AdamW struct {

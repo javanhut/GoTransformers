@@ -1,4 +1,4 @@
-module transformer
+module github.com/javanhut/GoTransformers
 
 go 1.27.1
 

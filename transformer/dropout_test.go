@@ -1,11 +1,11 @@
 package transformer
 
 import (
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/parameter"
 	"math"
 	"reflect"
 	"testing"
-	"transformer/optimizer"
-	"transformer/parameter"
 )
 
 func dropoutSettings() Settings {

@@ -1,8 +1,8 @@
 package optimizer
 
 import (
-	"transformer/parameter"
-	"transformer/vectormath"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/vectormath"
 )
 
 type SGD struct {

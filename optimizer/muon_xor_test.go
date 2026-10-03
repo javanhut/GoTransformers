@@ -1,13 +1,13 @@
 package optimizer_test
 
 import (
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/lossfunction"
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/perceptron"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"testing"
-	"transformer/activationfunction"
-	"transformer/lossfunction"
-	"transformer/optimizer"
-	"transformer/perceptron"
-	"transformer/vectormath"
 )
 
 func TestMuonLearnsXOR(t *testing.T) {

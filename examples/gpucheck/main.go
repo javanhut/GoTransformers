@@ -2,13 +2,13 @@ package main
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/gpu"
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/perceptron"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"time"
-	"transformer/activationfunction"
-	"transformer/gpu"
-	"transformer/optimizer"
-	"transformer/parameter"
-	"transformer/perceptron"
-	"transformer/vectormath"
 )
 
 func timeMultiply(backend vectormath.Backend, first vectormath.Matrix, second vectormath.Matrix) time.Duration {

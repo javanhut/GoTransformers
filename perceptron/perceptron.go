@@ -2,7 +2,7 @@ package perceptron
 
 import (
 	"fmt"
-	"transformer/activationfunction"
+	"github.com/javanhut/GoTransformers/activationfunction"
 )
 
 type Perceptron struct {

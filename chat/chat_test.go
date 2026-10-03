@@ -1,14 +1,14 @@
 package chat
 
 import (
+	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/pretrained"
+	"github.com/javanhut/GoTransformers/tokenizer"
+	"github.com/javanhut/GoTransformers/transformer"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"transformer/lowprecision"
-	"transformer/pretrained"
-	"transformer/tokenizer"
-	"transformer/transformer"
 )
 
 const smolLM2Source = "{% for message in messages %}{% if loop.first and messages[0]['role'] != 'system' %}{{ '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|im_end|>\n' }}{% endif %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"

@@ -1,9 +1,9 @@
 package optimizer
 
 import (
+	"github.com/javanhut/GoTransformers/parameter"
 	"math"
 	"testing"
-	"transformer/parameter"
 )
 
 func minimize(chosenOptimizer Optimizer, steps int) []float64 {

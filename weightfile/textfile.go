@@ -3,9 +3,9 @@ package weightfile
 import (
 	"bufio"
 	"fmt"
+	"github.com/javanhut/GoTransformers/parameter"
 	"os"
 	"strconv"
-	"transformer/parameter"
 )
 
 func SaveText(path string, parameters []parameter.Parameter) error {

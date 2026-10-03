@@ -3,18 +3,18 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/javanhut/GoTransformers/attention"
+	"github.com/javanhut/GoTransformers/datafile"
+	"github.com/javanhut/GoTransformers/embedding"
+	"github.com/javanhut/GoTransformers/gpu"
+	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/transformer"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
-	"transformer/attention"
-	"transformer/datafile"
-	"transformer/embedding"
-	"transformer/gpu"
-	"transformer/lowprecision"
-	"transformer/optimizer"
-	"transformer/transformer"
-	"transformer/vectormath"
 )
 
 const builtInText = `the quick brown fox jumps over the lazy dog. the lazy dog sleeps in the sun. the quick brown fox runs into the woods. `

@@ -1,11 +1,11 @@
 package embedding
 
 import (
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"path/filepath"
 	"reflect"
 	"testing"
-	"transformer/vectormath"
 )
 
 func TestEmbeddingForwardAndBackward(t *testing.T) {

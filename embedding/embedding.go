@@ -2,10 +2,10 @@ package embedding
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
-	"transformer/lowprecision"
-	"transformer/parameter"
-	"transformer/vectormath"
 )
 
 type Embedding struct {

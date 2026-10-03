@@ -2,7 +2,7 @@ package optimizer
 
 import (
 	"fmt"
-	"transformer/parameter"
+	"github.com/javanhut/GoTransformers/parameter"
 )
 
 type Optimizer interface {

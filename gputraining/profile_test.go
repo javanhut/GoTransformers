@@ -1,12 +1,12 @@
 package gputraining
 
 import (
+	"github.com/javanhut/GoTransformers/transformer"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"os"
 	"sort"
 	"testing"
 	"time"
-	"transformer/transformer"
-	"transformer/vectormath"
 )
 
 func TestProfileTrainingStep(t *testing.T) {

@@ -2,8 +2,8 @@ package attention
 
 import (
 	"fmt"
-	"transformer/lowprecision"
-	"transformer/vectormath"
+	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/vectormath"
 )
 
 type generationState struct {

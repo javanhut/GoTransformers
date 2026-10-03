@@ -2,8 +2,8 @@ package transformer
 
 import (
 	"fmt"
-	"transformer/attention"
-	"transformer/lowprecision"
+	"github.com/javanhut/GoTransformers/attention"
+	"github.com/javanhut/GoTransformers/lowprecision"
 )
 
 type AttentionKind string

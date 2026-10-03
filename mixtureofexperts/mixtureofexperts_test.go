@@ -1,11 +1,11 @@
 package mixtureofexperts
 
 import (
+	"github.com/javanhut/GoTransformers/gradientcheck"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"reflect"
 	"testing"
-	"transformer/gradientcheck"
-	"transformer/vectormath"
 )
 
 func TestGradients(t *testing.T) {

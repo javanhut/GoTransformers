@@ -2,17 +2,17 @@ package gputraining
 
 import (
 	"fmt"
+	"github.com/javanhut/GoTransformers/attention"
+	"github.com/javanhut/GoTransformers/embedding"
+	"github.com/javanhut/GoTransformers/gpu"
+	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/perceptron"
+	"github.com/javanhut/GoTransformers/transformer"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 	"strings"
-	"transformer/attention"
-	"transformer/embedding"
-	"transformer/gpu"
-	"transformer/lowprecision"
-	"transformer/optimizer"
-	"transformer/parameter"
-	"transformer/perceptron"
-	"transformer/transformer"
-	"transformer/vectormath"
 )
 
 type TrainerOptions struct {

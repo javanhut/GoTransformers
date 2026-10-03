@@ -5,10 +5,10 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/vectormath"
 	"os"
 	"path/filepath"
-	"transformer/optimizer"
-	"transformer/vectormath"
 )
 
 type TrainingProgress struct {

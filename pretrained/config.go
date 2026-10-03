@@ -3,11 +3,11 @@ package pretrained
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/javanhut/GoTransformers/attention"
+	"github.com/javanhut/GoTransformers/lowprecision"
+	"github.com/javanhut/GoTransformers/transformer"
 	"os"
 	"strings"
-	"transformer/attention"
-	"transformer/lowprecision"
-	"transformer/transformer"
 )
 
 type LlamaConfig struct {

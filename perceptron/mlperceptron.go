@@ -2,11 +2,11 @@ package perceptron
 
 import (
 	"fmt"
-	"transformer/activationfunction"
-	"transformer/lossfunction"
-	"transformer/optimizer"
-	"transformer/parameter"
-	"transformer/vectormath"
+	"github.com/javanhut/GoTransformers/activationfunction"
+	"github.com/javanhut/GoTransformers/lossfunction"
+	"github.com/javanhut/GoTransformers/optimizer"
+	"github.com/javanhut/GoTransformers/parameter"
+	"github.com/javanhut/GoTransformers/vectormath"
 )
 
 type MultiLayerPerceptron struct {
