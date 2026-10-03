@@ -105,3 +105,21 @@ func TestThreadedCPUMatchesSlowVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestOneRowSplitsAcrossColumns(t *testing.T) {
+	first := NewRandomMatrix(1, 300, -1, 1)
+	second := NewRandomMatrix(300, 900, -1, 1)
+	want := slowMatrixTimesMatrix(first, second)
+	results := map[string]Matrix{
+		"MatrixTimesMatrix":     MatrixTimesMatrix(first, second),
+		"MatrixTimesTransposed": MatrixTimesTransposed(first, Transpose(second)),
+	}
+	for name, got := range results {
+		for i := range want.Values {
+			if math.Abs(got.Values[i]-want.Values[i]) > 1e-9 {
+				t.Errorf("%s value %d: got %v, want %v", name, i, got.Values[i], want.Values[i])
+				break
+			}
+		}
+	}
+}

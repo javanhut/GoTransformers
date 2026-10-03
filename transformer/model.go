@@ -7,10 +7,8 @@ import (
 	"transformer/embedding"
 	"transformer/feedforward"
 	"transformer/hyperconnection"
-	"transformer/lossfunction"
 	"transformer/mixtureofexperts"
 	"transformer/normalization"
-	"transformer/optimizer"
 	"transformer/parameter"
 	"transformer/perceptron"
 	"transformer/vectormath"
@@ -23,6 +21,7 @@ type Model struct {
 	FinalNorm           *normalization.RMSNorm
 	OutputLayer         *perceptron.Layer
 	MultiTokenPredictor *MultiTokenPredictor
+	FrozenNamePrefixes  []string
 
 	generatedPositions int
 	lastScores         vectormath.Vector
@@ -70,7 +69,24 @@ func NewModel(settings Settings) (*Model, error) {
 	if settings.MultiTokenPrediction {
 		model.MultiTokenPredictor = newMultiTokenPredictor(settings, model.TokenEmbedding)
 	}
+	if settings.NormEpsilon > 0 {
+		for _, norm := range model.allNorms() {
+			norm.Epsilon = settings.NormEpsilon
+		}
+	}
 	return model, nil
+}
+
+func (model *Model) allNorms() []*normalization.RMSNorm {
+	norms := []*normalization.RMSNorm{model.FinalNorm}
+	for _, block := range model.Blocks {
+		norms = append(norms, block.AttentionNorm, block.FeedForwardNorm)
+	}
+	if model.MultiTokenPredictor != nil {
+		predictor := model.MultiTokenPredictor
+		norms = append(norms, predictor.HiddenNorm, predictor.EmbeddingNorm, predictor.FinalNorm, predictor.Block.AttentionNorm, predictor.Block.FeedForwardNorm)
+	}
+	return norms
 }
 
 func makeStandardAttention(settings Settings, name string, blockIndex int, standardBlocksSoFar int, groupOwner *attention.SelfAttention) (*attention.SelfAttention, *attention.SelfAttention) {
@@ -189,57 +205,6 @@ func OneHotTargets(targetIDs []int, vocabularySize int) vectormath.Matrix {
 		targets.Set(row, targetID, 1)
 	}
 	return targets
-}
-
-func checkEnoughTokens(functionName string, tokenIDs []int) {
-	if len(tokenIDs) < 2 {
-		panic(fmt.Sprintf("Model.%s: needs at least 2 tokens to learn what comes next, got %d", functionName, len(tokenIDs)))
-	}
-}
-
-func (model *Model) Loss(tokenIDs []int) float64 {
-	checkEnoughTokens("Loss", tokenIDs)
-	scores := model.Forward(tokenIDs[:len(tokenIDs)-1])
-	targets := OneHotTargets(tokenIDs[1:], model.Settings.VocabularySize)
-	return lossfunction.SoftmaxCrossEntropy.Calculate(scores, targets)
-}
-
-func (model *Model) usesMultiTokenPrediction(tokenIDs []int) bool {
-	return model.MultiTokenPredictor != nil && len(tokenIDs) >= 3
-}
-
-func (model *Model) TrainingLoss(tokenIDs []int) float64 {
-	checkEnoughTokens("TrainingLoss", tokenIDs)
-	model.checkTokenIDs(tokenIDs)
-	if !model.usesMultiTokenPrediction(tokenIDs) {
-		return model.Loss(tokenIDs)
-	}
-	loss, _ := model.multiTokenForward(tokenIDs)
-	return loss
-}
-
-func (model *Model) ComputeGradients(tokenIDs []int) float64 {
-	checkEnoughTokens("ComputeGradients", tokenIDs)
-	model.checkTokenIDs(tokenIDs)
-	if model.usesMultiTokenPrediction(tokenIDs) {
-		loss, memory := model.multiTokenForward(tokenIDs)
-		model.multiTokenBackward(memory)
-		return loss
-	}
-	scores := model.Forward(tokenIDs[:len(tokenIDs)-1])
-	targets := OneHotTargets(tokenIDs[1:], model.Settings.VocabularySize)
-	loss := lossfunction.SoftmaxCrossEntropy.Calculate(scores, targets)
-	model.Backward(lossfunction.SoftmaxCrossEntropy.Gradient(scores, targets))
-	return loss
-}
-
-func (model *Model) TrainStep(tokenIDs []int, chosenOptimizer optimizer.Optimizer) float64 {
-	parameters := model.Parameters()
-	parameter.ZeroGradients(parameters)
-	loss := model.ComputeGradients(tokenIDs)
-	chosenOptimizer.Update(parameters)
-	model.UpdateExpertBalance()
-	return loss
 }
 
 func (model *Model) UpdateExpertBalance() {

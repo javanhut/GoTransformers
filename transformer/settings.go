@@ -30,6 +30,9 @@ type Settings struct {
 	UseAttentionSink        bool
 	UseRotaryPositions      bool
 	RotaryDimensions        int
+	RotaryBase              float64
+	RotateHalves            bool
+	NormEpsilon             float64
 	WindowSize              int
 	FullAttentionEvery      int
 	TopK                    int
@@ -155,6 +158,9 @@ func (settings Settings) Check() error {
 			return fmt.Errorf("rotary positions need an even number of rotary dimensions no bigger than the head size %d, got %d", settings.headSize(), rotary)
 		}
 	}
+	if settings.RotaryBase < 0 || settings.NormEpsilon < 0 {
+		return fmt.Errorf("RotaryBase and NormEpsilon can't be negative (0 means the default), got %v and %v", settings.RotaryBase, settings.NormEpsilon)
+	}
 	if settings.QueryRank < 0 {
 		return fmt.Errorf("QueryRank can't be negative, got %d", settings.QueryRank)
 	}
@@ -227,6 +233,8 @@ func (settings Settings) standardOptions() attention.Options {
 		UseAttentionSink:        settings.UseAttentionSink,
 		UseRotaryPositions:      settings.UseRotaryPositions,
 		RotaryDimensions:        settings.RotaryDimensions,
+		RotaryBase:              settings.RotaryBase,
+		RotateHalves:            settings.RotateHalves,
 		CachePrecision:          settings.CachePrecision,
 		TrainAtCachePrecision:   settings.TrainAtCachePrecision,
 	}

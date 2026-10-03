@@ -116,8 +116,8 @@ func rotarySharingChain() stack {
 
 func TestRotaryUndoesItself(t *testing.T) {
 	vector := vectormath.Vector{1, 2, 3, 4, 5, 6, 7, 8}
-	rotated := rotateEachHead(vector, 7, 2, 4, 4, rotateForward)
-	back := rotateEachHead(rotated, 7, 2, 4, 4, rotateBackward)
+	rotated := rotateEachHead(vector, 7, 2, 4, rotarySettings{dimensions: 4, base: rotaryBase}, rotateForward)
+	back := rotateEachHead(rotated, 7, 2, 4, rotarySettings{dimensions: 4, base: rotaryBase}, rotateBackward)
 	for i := range vector {
 		if math.Abs(back[i]-vector[i]) > 1e-12 {
 			t.Errorf("value %d: started %v, rotated and back %v", i, vector[i], back[i])
@@ -128,11 +128,29 @@ func TestRotaryUndoesItself(t *testing.T) {
 	}
 }
 
+func TestRotateHalvesMatchesHuggingFaceLayout(t *testing.T) {
+	vector := vectormath.Vector{1, 2, 3, 4}
+	rotated := rotateEachHead(vector, 1, 1, 4, rotarySettings{dimensions: 4, base: 10000, rotateHalves: true}, rotateForward)
+	firstAngle := 1.0
+	secondAngle := math.Pow(10000, -0.5)
+	want := vectormath.Vector{
+		1*math.Cos(firstAngle) - 3*math.Sin(firstAngle),
+		2*math.Cos(secondAngle) - 4*math.Sin(secondAngle),
+		1*math.Sin(firstAngle) + 3*math.Cos(firstAngle),
+		2*math.Sin(secondAngle) + 4*math.Cos(secondAngle),
+	}
+	for i := range want {
+		if math.Abs(rotated[i]-want[i]) > 1e-12 {
+			t.Errorf("value %d: got %v, want %v", i, rotated[i], want[i])
+		}
+	}
+}
+
 func TestRotaryOnlyCaresAboutDistance(t *testing.T) {
 	query := vectormath.Vector{0.3, -1, 0.5, 2}
 	key := vectormath.Vector{1, 0.2, -0.7, 0.4}
-	near := vectormath.DotProduct(rotateEachHead(query, 5, 1, 4, 4, rotateForward), rotateEachHead(key, 3, 1, 4, 4, rotateForward))
-	far := vectormath.DotProduct(rotateEachHead(query, 105, 1, 4, 4, rotateForward), rotateEachHead(key, 103, 1, 4, 4, rotateForward))
+	near := vectormath.DotProduct(rotateEachHead(query, 5, 1, 4, rotarySettings{dimensions: 4, base: rotaryBase}, rotateForward), rotateEachHead(key, 3, 1, 4, rotarySettings{dimensions: 4, base: rotaryBase}, rotateForward))
+	far := vectormath.DotProduct(rotateEachHead(query, 105, 1, 4, rotarySettings{dimensions: 4, base: rotaryBase}, rotateForward), rotateEachHead(key, 103, 1, 4, rotarySettings{dimensions: 4, base: rotaryBase}, rotateForward))
 	if math.Abs(near-far) > 1e-9 {
 		t.Errorf("positions 5 and 3 scored %v but positions 105 and 103 scored %v", near, far)
 	}

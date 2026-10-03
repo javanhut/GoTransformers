@@ -55,6 +55,8 @@ type Options struct {
 	UseAttentionSink        bool
 	UseRotaryPositions      bool
 	RotaryDimensions        int
+	RotaryBase              float64
+	RotateHalves            bool
 	WindowSize              int
 	TopK                    int
 	CachePrecision          lowprecision.Precision
@@ -75,6 +77,8 @@ type SelfAttention struct {
 	ShareKeyAsValue       bool
 	UseRotaryPositions    bool
 	RotaryDimensions      int
+	RotaryBase            float64
+	RotateHalves          bool
 	WindowSize            int
 	TopK                  int
 	SharingMode           SharingMode
@@ -141,6 +145,8 @@ func NewSelfAttentionWithOptions(name string, vectorSize int, options Options) *
 		ShareKeyAsValue:       options.ShareKeyAsValue,
 		UseRotaryPositions:    options.UseRotaryPositions,
 		RotaryDimensions:      options.RotaryDimensions,
+		RotaryBase:            options.RotaryBase,
+		RotateHalves:          options.RotateHalves,
 		WindowSize:            options.WindowSize,
 		TopK:                  options.TopK,
 		SharingMode:           OwnKeysAndValues,
@@ -193,6 +199,8 @@ func (attention *SelfAttention) Options() Options {
 		UseAttentionSink:        attention.SinkLogits != nil,
 		UseRotaryPositions:      attention.UseRotaryPositions,
 		RotaryDimensions:        attention.RotaryDimensions,
+		RotaryBase:              attention.RotaryBase,
+		RotateHalves:            attention.RotateHalves,
 		WindowSize:              attention.WindowSize,
 		TopK:                    attention.TopK,
 		CachePrecision:          attention.CachePrecision,
@@ -216,6 +224,8 @@ func NewBorrowingSelfAttention(name string, sharedFrom *SelfAttention, mode Shar
 		ShareKeyAsValue:       options.ShareKeyAsValue,
 		UseRotaryPositions:    options.UseRotaryPositions,
 		RotaryDimensions:      options.RotaryDimensions,
+		RotaryBase:            options.RotaryBase,
+		RotateHalves:          options.RotateHalves,
 		WindowSize:            options.WindowSize,
 		TopK:                  options.TopK,
 		SharingMode:           mode,
@@ -297,7 +307,7 @@ func (attention *SelfAttention) checkSetUp() {
 	}
 	owner := attention.keyValueOwner()
 	sameShape := owner.VectorSize() == attention.VectorSize() && owner.NumberOfHeads == attention.NumberOfHeads && owner.NumberOfKeyValueHeads == attention.NumberOfKeyValueHeads
-	samePositions := owner.UseRotaryPositions == attention.UseRotaryPositions && owner.rotaryDimensions() == attention.rotaryDimensions() && owner.ShareKeyAsValue == attention.ShareKeyAsValue
+	samePositions := owner.UseRotaryPositions == attention.UseRotaryPositions && owner.rotary() == attention.rotary() && owner.ShareKeyAsValue == attention.ShareKeyAsValue
 	if !sameShape || !samePositions {
 		panic(fmt.Sprintf("attention %q: borrows from %q, so both need the same vector size, heads, key/value heads, rotary settings and ShareKeyAsValue", attention.Name, owner.Name))
 	}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"transformer/parameter"
+	"transformer/vectormath"
 )
 
 func checkNamesCanBeSaved(parameters []parameter.Parameter) error {
@@ -36,6 +37,7 @@ func CopyInto(parameters []parameter.Parameter, savedValues map[string][]float64
 	for _, current := range parameters {
 		copy(current.Values, savedValues[current.Name])
 	}
+	vectormath.MarkWeightsChanged()
 	return nil
 }
 

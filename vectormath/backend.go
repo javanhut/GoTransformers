@@ -55,46 +55,60 @@ func (CPUBackend) Name() string {
 
 const workBeforeUsingMoreThreads = 64 * 64 * 64
 
-func splitRowsAcrossThreads(numberOfRows int, workPerRow int, doRows func(firstRow int, lastRow int)) {
+func splitAcrossThreads(numberOfItems int, workPerItem int, doItems func(firstItem int, lastItem int)) {
 	numberOfThreads := runtime.GOMAXPROCS(0)
-	if numberOfRows*workPerRow < workBeforeUsingMoreThreads || numberOfThreads == 1 || numberOfRows < 2 {
-		doRows(0, numberOfRows)
+	if numberOfItems*workPerItem < workBeforeUsingMoreThreads || numberOfThreads == 1 || numberOfItems < 2 {
+		doItems(0, numberOfItems)
 		return
 	}
-	if numberOfThreads > numberOfRows {
-		numberOfThreads = numberOfRows
+	if numberOfThreads > numberOfItems {
+		numberOfThreads = numberOfItems
 	}
-	rowsPerThread := (numberOfRows + numberOfThreads - 1) / numberOfThreads
+	itemsPerThread := (numberOfItems + numberOfThreads - 1) / numberOfThreads
 	var waitGroup sync.WaitGroup
-	for firstRow := 0; firstRow < numberOfRows; firstRow += rowsPerThread {
-		lastRow := firstRow + rowsPerThread
-		if lastRow > numberOfRows {
-			lastRow = numberOfRows
+	for firstItem := 0; firstItem < numberOfItems; firstItem += itemsPerThread {
+		lastItem := firstItem + itemsPerThread
+		if lastItem > numberOfItems {
+			lastItem = numberOfItems
 		}
 		waitGroup.Add(1)
-		go func(firstRow int, lastRow int) {
+		go func(firstItem int, lastItem int) {
 			defer waitGroup.Done()
-			doRows(firstRow, lastRow)
-		}(firstRow, lastRow)
+			doItems(firstItem, lastItem)
+		}(firstItem, lastItem)
 	}
 	waitGroup.Wait()
 }
 
+func tooFewRowsForThreads(rows int) bool {
+	return rows < runtime.GOMAXPROCS(0)
+}
+
 func (CPUBackend) MatrixTimesMatrix(first Matrix, second Matrix) Matrix {
 	result := NewMatrix(first.Rows, second.Columns)
-	splitRowsAcrossThreads(first.Rows, first.Columns*second.Columns, func(firstRow int, lastRow int) {
-		for row := firstRow; row < lastRow; row++ {
-			resultRow := result.Row(row)
-			firstRowValues := first.Row(row)
-			for step, firstValue := range firstRowValues {
-				if firstValue == 0 {
-					continue
-				}
-				secondRowValues := second.Row(step)
-				for column := range resultRow {
-					resultRow[column] += firstValue * secondRowValues[column]
-				}
+	multiplyColumns := func(row int, firstColumn int, lastColumn int) {
+		resultRow := result.Row(row)[firstColumn:lastColumn]
+		for step, firstValue := range first.Row(row) {
+			if firstValue == 0 {
+				continue
 			}
+			secondRowValues := second.Row(step)[firstColumn:lastColumn]
+			for column := range resultRow {
+				resultRow[column] += firstValue * secondRowValues[column]
+			}
+		}
+	}
+	if tooFewRowsForThreads(first.Rows) {
+		splitAcrossThreads(second.Columns, first.Rows*first.Columns, func(firstColumn int, lastColumn int) {
+			for row := 0; row < first.Rows; row++ {
+				multiplyColumns(row, firstColumn, lastColumn)
+			}
+		})
+		return result
+	}
+	splitAcrossThreads(first.Rows, first.Columns*second.Columns, func(firstRow int, lastRow int) {
+		for row := firstRow; row < lastRow; row++ {
+			multiplyColumns(row, 0, second.Columns)
 		}
 	})
 	return result
@@ -102,13 +116,24 @@ func (CPUBackend) MatrixTimesMatrix(first Matrix, second Matrix) Matrix {
 
 func (CPUBackend) MatrixTimesTransposed(first Matrix, second Matrix) Matrix {
 	result := NewMatrix(first.Rows, second.Rows)
-	splitRowsAcrossThreads(first.Rows, first.Columns*second.Rows, func(firstRow int, lastRow int) {
-		for row := firstRow; row < lastRow; row++ {
-			firstRowValues := first.Row(row)
-			resultRow := result.Row(row)
-			for column := range resultRow {
-				resultRow[column] = DotProduct(firstRowValues, second.Row(column))
+	multiplyColumns := func(row int, firstColumn int, lastColumn int) {
+		firstRowValues := first.Row(row)
+		resultRow := result.Row(row)
+		for column := firstColumn; column < lastColumn; column++ {
+			resultRow[column] = DotProduct(firstRowValues, second.Row(column))
+		}
+	}
+	if tooFewRowsForThreads(first.Rows) {
+		splitAcrossThreads(second.Rows, first.Rows*first.Columns, func(firstColumn int, lastColumn int) {
+			for row := 0; row < first.Rows; row++ {
+				multiplyColumns(row, firstColumn, lastColumn)
 			}
+		})
+		return result
+	}
+	splitAcrossThreads(first.Rows, first.Columns*second.Rows, func(firstRow int, lastRow int) {
+		for row := firstRow; row < lastRow; row++ {
+			multiplyColumns(row, 0, second.Rows)
 		}
 	})
 	return result
@@ -116,7 +141,7 @@ func (CPUBackend) MatrixTimesTransposed(first Matrix, second Matrix) Matrix {
 
 func (CPUBackend) TransposedTimesMatrix(first Matrix, second Matrix) Matrix {
 	result := NewMatrix(first.Columns, second.Columns)
-	splitRowsAcrossThreads(first.Columns, first.Rows*second.Columns, func(firstRow int, lastRow int) {
+	splitAcrossThreads(first.Columns, first.Rows*second.Columns, func(firstRow int, lastRow int) {
 		for step := 0; step < first.Rows; step++ {
 			firstRowValues := first.Row(step)
 			secondRowValues := second.Row(step)

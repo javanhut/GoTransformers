@@ -1,6 +1,9 @@
 package optimizer
 
-import "transformer/parameter"
+import (
+	"transformer/parameter"
+	"transformer/vectormath"
+)
 
 type SGD struct {
 	LearningRate float64
@@ -11,6 +14,7 @@ func NewSGD(learningRate float64) *SGD {
 }
 
 func (sgd *SGD) Update(parameters []parameter.Parameter) {
+	defer vectormath.MarkWeightsChanged()
 	for _, current := range parameters {
 		checkGradientSize(current)
 		for i := range current.Values {
@@ -34,6 +38,7 @@ func NewSGDWithMomentum(learningRate float64, momentum float64) *SGDWithMomentum
 }
 
 func (sgd *SGDWithMomentum) Update(parameters []parameter.Parameter) {
+	defer vectormath.MarkWeightsChanged()
 	checkNamesAreUnique(parameters)
 	if sgd.velocities == nil {
 		sgd.velocities = map[string][]float64{}

@@ -27,6 +27,7 @@ func NewMuon(learningRate float64) *Muon {
 }
 
 func (muon *Muon) Update(parameters []parameter.Parameter) {
+	defer vectormath.MarkWeightsChanged()
 	checkNamesAreUnique(parameters)
 	if muon.momentumBuffers == nil {
 		muon.momentumBuffers = map[string][]float64{}

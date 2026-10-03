@@ -3,6 +3,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"transformer/attention"
@@ -25,6 +27,9 @@ func main() {
 	savePath := flag.String("save", "", "where to save the trained model (doesn't save if empty)")
 	deepSeekStyle := flag.Bool("deepseek", false, "use the DeepSeek-V4 style model: compressed attention, experts, mHC, multi-token prediction")
 	optimizerName := flag.String("optimizer", "adam", "adam, adamw or muon")
+	batchSize := flag.Int("batch", 4, "how many chunks each training step learns from")
+	checkpointFolder := flag.String("checkpoint", "", "folder to save checkpoints in, and to resume from if one is already there")
+	checkpointEvery := flag.Int("checkpoint-every", 100, "save a checkpoint every this many steps")
 	flag.Parse()
 
 	if *useGPU {
@@ -63,14 +68,7 @@ func main() {
 		settings = transformer.DeepSeekStyleSettings(vocabulary.Size())
 	}
 
-	model, err := transformer.NewModel(settings)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println("model:", model.Describe())
-	fmt.Printf("text: %d characters, %d different ones\n", len(characters), vocabulary.Size())
-
-	var chosenOptimizer optimizer.Optimizer
+	var chosenOptimizer optimizer.Resumable
 	switch *optimizerName {
 	case "adam":
 		chosenOptimizer = optimizer.NewAdam(0.003)
@@ -82,12 +80,37 @@ func main() {
 		panic("unknown optimizer " + *optimizerName + ", use adam, adamw or muon")
 	}
 	fmt.Println("optimizer:", *optimizerName)
+
+	model, err := transformer.NewModel(settings)
+	if err != nil {
+		panic(err)
+	}
+	firstStep := 1
+	if *checkpointFolder != "" {
+		if _, statErr := os.Stat(filepath.Join(*checkpointFolder, "progress.json")); statErr == nil {
+			resumedModel, stepsDone, loadErr := transformer.LoadCheckpoint(*checkpointFolder, chosenOptimizer)
+			if loadErr != nil {
+				panic(loadErr)
+			}
+			model = resumedModel
+			firstStep = stepsDone + 1
+			fmt.Printf("resumed from %s after step %d\n", *checkpointFolder, stepsDone)
+		}
+	}
+	fmt.Println("model:", model.Describe())
+	fmt.Printf("text: %d characters, %d different ones, batches of %d chunks\n", len(characters), vocabulary.Size(), *batchSize)
+
 	startTime := time.Now()
-	for step := 1; step <= *steps; step++ {
-		chunk := transformer.RandomChunk(tokenIDs, *chunkLength+1)
-		loss := model.TrainStep(chunk, chosenOptimizer)
-		if step%50 == 0 || step == 1 {
+	for step := firstStep; step <= *steps; step++ {
+		chunks := transformer.RandomChunks(tokenIDs, *chunkLength+1, *batchSize)
+		loss := model.TrainBatch(chunks, chosenOptimizer)
+		if step%50 == 0 || step == firstStep {
 			fmt.Printf("step %4d  loss %.4f  (%s)\n", step, loss, time.Since(startTime).Round(time.Millisecond))
+		}
+		if *checkpointFolder != "" && (step%*checkpointEvery == 0 || step == *steps) {
+			if err := model.SaveCheckpoint(*checkpointFolder, chosenOptimizer, step); err != nil {
+				panic(err)
+			}
 		}
 	}
 

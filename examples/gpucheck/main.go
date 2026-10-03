@@ -3,7 +3,11 @@ package main
 import (
 	"fmt"
 	"time"
+	"transformer/activationfunction"
 	"transformer/gpu"
+	"transformer/optimizer"
+	"transformer/parameter"
+	"transformer/perceptron"
 	"transformer/vectormath"
 )
 
@@ -15,6 +19,36 @@ func timeMultiply(backend vectormath.Backend, first vectormath.Matrix, second ve
 		backend.MatrixTimesMatrix(first, second)
 	}
 	return time.Since(start) / time.Duration(repeats)
+}
+
+func timeGeneration(backend vectormath.Backend, weights vectormath.Matrix, repeats int) time.Duration {
+	vectormath.UseBackend(backend)
+	defer vectormath.UseBackend(nil)
+	oneToken := vectormath.NewRandomMatrix(1, weights.Columns, -1, 1)
+	vectormath.MatrixTimesTransposedWeights(oneToken, weights)
+	start := time.Now()
+	for i := 0; i < repeats; i++ {
+		vectormath.MatrixTimesTransposedWeights(oneToken, weights)
+	}
+	return time.Since(start)
+}
+
+func timeTrainingSteps(backend vectormath.Backend, layer *perceptron.Layer, inputs vectormath.Matrix, steps int) time.Duration {
+	vectormath.UseBackend(backend)
+	defer vectormath.UseBackend(nil)
+	sgd := optimizer.NewSGD(0.0001)
+	trainOneStep := func() {
+		parameter.ZeroGradients(layer.Parameters())
+		outputs := layer.Forward(inputs)
+		layer.Backward(outputs)
+		sgd.Update(layer.Parameters())
+	}
+	trainOneStep()
+	start := time.Now()
+	for step := 0; step < steps; step++ {
+		trainOneStep()
+	}
+	return time.Since(start) / time.Duration(steps)
 }
 
 func main() {
@@ -35,20 +69,14 @@ func main() {
 	}
 	defer device.Close()
 	fmt.Println("using", device.Name())
+	cpu := vectormath.CPUBackend{}
 
 	size := 1024
 	first := vectormath.NewRandomMatrix(size, size, -1, 1)
 	second := vectormath.NewRandomMatrix(size, size, -1, 1)
-
-	cpu := vectormath.CPUBackend{}
-	cpuTime := timeMultiply(cpu, first, second)
-	gpuTime := timeMultiply(device, first, second)
-	fmt.Printf("%dx%d times %dx%d:\n", size, size, size, size)
-	fmt.Printf("  %-45s %v\n", cpu.Name(), cpuTime)
-	fmt.Printf("  %-45s %v\n", device.Name(), gpuTime)
-	if err := device.LastError(); err != nil {
-		fmt.Println("the GPU had a problem and the CPU answered instead:", err)
-	}
+	fmt.Printf("\n%dx%d times %dx%d:\n", size, size, size, size)
+	fmt.Printf("  %-45s %v\n", cpu.Name(), timeMultiply(cpu, first, second))
+	fmt.Printf("  %-45s %v\n", device.Name(), timeMultiply(device, first, second))
 
 	cpuResult := cpu.MatrixTimesMatrix(first, second)
 	gpuResult := device.MatrixTimesMatrix(first, second)
@@ -62,5 +90,35 @@ func main() {
 			largestDifference = difference
 		}
 	}
-	fmt.Printf("largest difference between CPU and GPU answers: %.2g\n", largestDifference)
+	fmt.Printf("  largest difference between CPU and GPU answers: %.2g\n", largestDifference)
+
+	generationRepeats := 200
+	weights := vectormath.NewRandomMatrix(size, size, -1, 1)
+	fmt.Printf("\ngeneration-like: 1x%d times %dx%d weights, %d times:\n", size, size, size, generationRepeats)
+	fmt.Printf("  %-45s %v\n", "CPU", timeGeneration(cpu, weights, generationRepeats))
+	device.KeepWeightsOnGPU = false
+	defaultMinimumWork := device.MinimumWorkForGPU
+	device.MinimumWorkForGPU = 0
+	fmt.Printf("  %-45s %v\n", "GPU, uploading the weights every call", timeGeneration(device, weights, generationRepeats))
+	device.MinimumWorkForGPU = defaultMinimumWork
+	device.KeepWeightsOnGPU = true
+	fmt.Printf("  %-45s %v\n", "GPU, weights kept on the GPU", timeGeneration(device, weights, generationRepeats))
+
+	trainingSteps := 10
+	batchRows := 512
+	layer := perceptron.NewLayer("layer", size, size, activationfunction.Tanh)
+	inputs := vectormath.NewRandomMatrix(batchRows, size, -1, 1)
+	fmt.Printf("\ntraining-like: forward, backward and an SGD step, %d rows through a %dx%d layer (per step):\n", batchRows, size, size)
+	fmt.Printf("  %-45s %v\n", "CPU", timeTrainingSteps(cpu, layer, inputs, trainingSteps))
+	device.KeepWeightsOnGPU = false
+	fmt.Printf("  %-45s %v\n", "GPU, uploading the weights every call", timeTrainingSteps(device, layer, inputs, trainingSteps))
+	device.KeepWeightsOnGPU = true
+	uploadsBefore := device.WeightUploads()
+	residentTime := timeTrainingSteps(device, layer, inputs, trainingSteps)
+	fmt.Printf("  %-45s %v\n", "GPU, weights kept on the GPU", residentTime)
+	fmt.Printf("  weight uploads during %d resident steps: %d (one per optimizer step)\n", trainingSteps+1, device.WeightUploads()-uploadsBefore)
+
+	if err := device.LastError(); err != nil {
+		fmt.Println("the GPU had a problem and the CPU answered instead:", err)
+	}
 }

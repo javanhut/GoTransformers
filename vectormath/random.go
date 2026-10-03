@@ -2,10 +2,27 @@ package vectormath
 
 import "math/rand/v2"
 
-var randomNumbers = rand.New(rand.NewPCG(1, 1))
+var randomSource = rand.NewPCG(1, 1)
+
+var randomNumbers = rand.New(randomSource)
 
 func SetRandomSeed(seed uint64) {
-	randomNumbers = rand.New(rand.NewPCG(seed, seed))
+	randomSource = rand.NewPCG(seed, seed)
+	randomNumbers = rand.New(randomSource)
+}
+
+func SaveRandomState() ([]byte, error) {
+	return randomSource.MarshalBinary()
+}
+
+func RestoreRandomState(state []byte) error {
+	restored := rand.NewPCG(0, 0)
+	if err := restored.UnmarshalBinary(state); err != nil {
+		return err
+	}
+	randomSource = restored
+	randomNumbers = rand.New(randomSource)
+	return nil
 }
 
 func RandomNumberBetween(lowest float64, highest float64) float64 {

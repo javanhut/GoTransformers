@@ -11,6 +11,8 @@ import (
 
 const defaultMinimumWorkForGPU = 128 * 128 * 128
 
+const largestRowsForFewRowsShader = 8
+
 type gpuBuffer struct {
 	buffer   uint64
 	memory   uint64
@@ -26,7 +28,11 @@ type bufferKind struct {
 }
 
 type Device struct {
-	MinimumWorkForGPU int
+	MinimumWorkForGPU                                    int
+	MinimumWorkForGPUWithResidentWeights                 int
+	MinimumWorkForGPUWithFewRowsTimesUntransposedWeights int
+	KeepWeightsOnGPU                                     bool
+	WeightCacheLimitBytes                                uint64
 
 	info              DeviceInfo
 	useStagingBuffers bool
@@ -45,6 +51,8 @@ type Device struct {
 	maxWorkGroupCount     [3]uint32
 
 	shaderModule        uint64
+	fewRowsShaderModule uint64
+	fewRowsPipeline     uint64
 	descriptorSetLayout uint64
 	pipelineLayout      uint64
 	pipeline            uint64
@@ -62,6 +70,13 @@ type Device struct {
 	resultStaging gpuBuffer
 
 	descriptorsNeedUpdate bool
+	boundSecondBuffer     uint64
+
+	weightCache      map[weightCacheKey]*cachedWeights
+	weightCacheBytes uint64
+	weightUseCounter uint64
+	weightUploads    int
+	weightCacheHits  int
 }
 
 func Open(index int) (*Device, error) {
@@ -84,10 +99,14 @@ func openDevice(index int, forceStagingBuffers bool) (*Device, error) {
 	}
 
 	device := &Device{
-		MinimumWorkForGPU: defaultMinimumWorkForGPU,
-		info:              devices[index],
-		instance:          instance,
-		physicalDevice:    physicalDevices[index],
+		MinimumWorkForGPU:                                    defaultMinimumWorkForGPU,
+		MinimumWorkForGPUWithResidentWeights:                 defaultMinimumWorkForGPUWithResidentWeights,
+		MinimumWorkForGPUWithFewRowsTimesUntransposedWeights: defaultMinimumWorkForGPUWithFewRowsTimesUntransposedWeights,
+		WeightCacheLimitBytes:                                defaultWeightCacheLimitBytes,
+		info:                                                 devices[index],
+		instance:                                             instance,
+		physicalDevice:                                       physicalDevices[index],
+		weightCache:                                          map[weightCacheKey]*cachedWeights{},
 	}
 	kind := device.info.Kind
 	device.useStagingBuffers = forceStagingBuffers || !(kind == "integrated" || kind == "cpu")
@@ -163,20 +182,38 @@ func (device *Device) createLogicalDevice() error {
 	return nil
 }
 
-func (device *Device) createPipeline() error {
-	shaderWords := make([]uint32, (len(matrixMultiplyShader)+3)/4)
-	copy(unsafe.Slice((*byte)(unsafe.Pointer(&shaderWords[0])), len(shaderWords)*4), matrixMultiplyShader)
+func (device *Device) createShaderPipeline(shaderBytes []byte, shaderModule *uint64, pipeline *uint64) error {
+	shaderWords := make([]uint32, (len(shaderBytes)+3)/4)
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(&shaderWords[0])), len(shaderWords)*4), shaderBytes)
 	shaderInfo := &vkShaderModuleCreateInfo{
 		structureType: vkStructureTypeShaderModuleCreateInfo,
-		codeSize:      uintptr(len(matrixMultiplyShader)),
+		codeSize:      uintptr(len(shaderBytes)),
 		code:          unsafe.Pointer(&shaderWords[0]),
 	}
-	result := vkCreateShaderModule(device.logicalDevice, unsafe.Pointer(shaderInfo), nil, &device.shaderModule)
+	result := vkCreateShaderModule(device.logicalDevice, unsafe.Pointer(shaderInfo), nil, shaderModule)
 	runtime.KeepAlive(shaderWords)
 	if err := checkResult("vkCreateShaderModule", result); err != nil {
 		return err
 	}
 
+	entryPointName := makeCString("main")
+	pipelineInfo := &vkComputePipelineCreateInfo{
+		structureType: vkStructureTypeComputePipelineCreateInfo,
+		stage: vkPipelineShaderStageCreateInfo{
+			structureType: vkStructureTypePipelineShaderStageCreateInfo,
+			stage:         vkShaderStageComputeBit,
+			module:        *shaderModule,
+			name:          unsafe.Pointer(entryPointName),
+		},
+		layout:            device.pipelineLayout,
+		basePipelineIndex: -1,
+	}
+	result = vkCreateComputePipelines(device.logicalDevice, 0, 1, unsafe.Pointer(pipelineInfo), nil, pipeline)
+	runtime.KeepAlive(entryPointName)
+	return checkResult("vkCreateComputePipelines", result)
+}
+
+func (device *Device) createPipeline() error {
 	bindings := make([]vkDescriptorSetLayoutBinding, 3)
 	for binding := range bindings {
 		bindings[binding] = vkDescriptorSetLayoutBinding{
@@ -191,7 +228,7 @@ func (device *Device) createPipeline() error {
 		bindingCount:  uint32(len(bindings)),
 		bindings:      unsafe.Pointer(&bindings[0]),
 	}
-	result = vkCreateDescriptorSetLayout(device.logicalDevice, unsafe.Pointer(layoutInfo), nil, &device.descriptorSetLayout)
+	result := vkCreateDescriptorSetLayout(device.logicalDevice, unsafe.Pointer(layoutInfo), nil, &device.descriptorSetLayout)
 	runtime.KeepAlive(bindings)
 	if err := checkResult("vkCreateDescriptorSetLayout", result); err != nil {
 		return err
@@ -213,21 +250,10 @@ func (device *Device) createPipeline() error {
 		return err
 	}
 
-	entryPointName := makeCString("main")
-	pipelineInfo := &vkComputePipelineCreateInfo{
-		structureType: vkStructureTypeComputePipelineCreateInfo,
-		stage: vkPipelineShaderStageCreateInfo{
-			structureType: vkStructureTypePipelineShaderStageCreateInfo,
-			stage:         vkShaderStageComputeBit,
-			module:        device.shaderModule,
-			name:          unsafe.Pointer(entryPointName),
-		},
-		layout:            device.pipelineLayout,
-		basePipelineIndex: -1,
+	if err := device.createShaderPipeline(matrixMultiplyShader, &device.shaderModule, &device.pipeline); err != nil {
+		return err
 	}
-	result = vkCreateComputePipelines(device.logicalDevice, 0, 1, unsafe.Pointer(pipelineInfo), nil, &device.pipeline)
-	runtime.KeepAlive(entryPointName)
-	if err := checkResult("vkCreateComputePipelines", result); err != nil {
+	if err := device.createShaderPipeline(fewRowsShader, &device.fewRowsShaderModule, &device.fewRowsPipeline); err != nil {
 		return err
 	}
 
@@ -377,13 +403,31 @@ func (device *Device) makeBufferBigEnough(buffer *gpuBuffer, neededSize uint64, 
 	return nil
 }
 
-func (device *Device) makeAllBuffersBigEnough(firstSize uint64, secondSize uint64, resultSize uint64) error {
+func (device *Device) inputBufferKind() bufferKind {
 	if !device.useStagingBuffers {
-		inputKind := bufferKind{
+		return bufferKind{
 			usage:          vkBufferUsageStorageBufferBit,
 			requiredFlags:  vkMemoryPropertyHostVisibleBit,
 			preferredFlags: vkMemoryPropertyDeviceLocalBit | vkMemoryPropertyHostCoherentBit,
 		}
+	}
+	return bufferKind{
+		usage:         vkBufferUsageStorageBufferBit | vkBufferUsageTransferDestinationBit,
+		requiredFlags: vkMemoryPropertyDeviceLocalBit,
+	}
+}
+
+func uploadBufferKind() bufferKind {
+	return bufferKind{
+		usage:          vkBufferUsageTransferSourceBit,
+		requiredFlags:  vkMemoryPropertyHostVisibleBit,
+		preferredFlags: vkMemoryPropertyHostCoherentBit,
+	}
+}
+
+func (device *Device) makeAllBuffersBigEnough(firstSize uint64, secondSize uint64, resultSize uint64) error {
+	inputKind := device.inputBufferKind()
+	if !device.useStagingBuffers {
 		resultKind := bufferKind{
 			usage:          vkBufferUsageStorageBufferBit,
 			requiredFlags:  vkMemoryPropertyHostVisibleBit,
@@ -398,19 +442,11 @@ func (device *Device) makeAllBuffersBigEnough(firstSize uint64, secondSize uint6
 		return device.makeBufferBigEnough(&device.resultBuffer, resultSize, resultKind)
 	}
 
-	inputKind := bufferKind{
-		usage:         vkBufferUsageStorageBufferBit | vkBufferUsageTransferDestinationBit,
-		requiredFlags: vkMemoryPropertyDeviceLocalBit,
-	}
 	resultKind := bufferKind{
 		usage:         vkBufferUsageStorageBufferBit | vkBufferUsageTransferSourceBit,
 		requiredFlags: vkMemoryPropertyDeviceLocalBit,
 	}
-	uploadKind := bufferKind{
-		usage:          vkBufferUsageTransferSourceBit,
-		requiredFlags:  vkMemoryPropertyHostVisibleBit,
-		preferredFlags: vkMemoryPropertyHostCoherentBit,
-	}
+	uploadKind := uploadBufferKind()
 	downloadKind := bufferKind{
 		usage:          vkBufferUsageTransferDestinationBit,
 		requiredFlags:  vkMemoryPropertyHostVisibleBit,
@@ -436,11 +472,11 @@ func (device *Device) makeAllBuffersBigEnough(firstSize uint64, secondSize uint6
 	return nil
 }
 
-func (device *Device) updateDescriptors() {
-	if !device.descriptorsNeedUpdate {
+func (device *Device) updateDescriptors(secondBinding *gpuBuffer) {
+	if !device.descriptorsNeedUpdate && device.boundSecondBuffer == secondBinding.buffer {
 		return
 	}
-	buffers := []*gpuBuffer{&device.firstBuffer, &device.secondBuffer, &device.resultBuffer}
+	buffers := []*gpuBuffer{&device.firstBuffer, secondBinding, &device.resultBuffer}
 	bufferInfos := make([]vkDescriptorBufferInfo, len(buffers))
 	writes := make([]vkWriteDescriptorSet, len(buffers))
 	for binding, buffer := range buffers {
@@ -457,6 +493,7 @@ func (device *Device) updateDescriptors() {
 	vkUpdateDescriptorSets(device.logicalDevice, uint32(len(writes)), unsafe.Pointer(&writes[0]), 0, nil)
 	runtime.KeepAlive(bufferInfos)
 	device.descriptorsNeedUpdate = false
+	device.boundSecondBuffer = secondBinding.buffer
 }
 
 func (device *Device) flushIfNeeded(buffer *gpuBuffer) error {
@@ -526,7 +563,27 @@ func (device *Device) addCopy(source *gpuBuffer, destination *gpuBuffer, size ui
 	runtime.KeepAlive(region)
 }
 
-func (device *Device) recordCommands(sizes *pushConstants, firstSize uint64, secondSize uint64, resultSize uint64) error {
+func (device *Device) usesFewRowsShader(sizes *pushConstants) bool {
+	return sizes.rows <= largestRowsForFewRowsShader && sizes.firstIsTransposed == 0 && sizes.secondIsTransposed == 1
+}
+
+func (device *Device) workGroupsFor(sizes *pushConstants) (uint32, uint32, bool) {
+	if !device.usesFewRowsShader(sizes) {
+		groupsAcross := (sizes.columns + 63) / 64
+		groupsDown := (sizes.rows + 63) / 64
+		fits := groupsAcross <= device.maxWorkGroupCount[0] && groupsDown <= device.maxWorkGroupCount[1]
+		return groupsAcross, groupsDown, fits
+	}
+	totalGroups := sizes.columns
+	groupsAcross := totalGroups
+	if groupsAcross > device.maxWorkGroupCount[0] {
+		groupsAcross = device.maxWorkGroupCount[0]
+	}
+	groupsDown := (totalGroups + groupsAcross - 1) / groupsAcross
+	return groupsAcross, groupsDown, groupsDown <= device.maxWorkGroupCount[1]
+}
+
+func (device *Device) recordCommands(sizes *pushConstants, firstSize uint64, secondSize uint64, resultSize uint64, copySecond bool) error {
 	if err := checkResult("vkResetCommandBuffer", vkResetCommandBuffer(device.commandBuffer, 0)); err != nil {
 		return err
 	}
@@ -540,18 +597,23 @@ func (device *Device) recordCommands(sizes *pushConstants, firstSize uint64, sec
 
 	if device.useStagingBuffers {
 		device.addCopy(&device.firstStaging, &device.firstBuffer, firstSize)
-		device.addCopy(&device.secondStaging, &device.secondBuffer, secondSize)
+		if copySecond {
+			device.addCopy(&device.secondStaging, &device.secondBuffer, secondSize)
+		}
 		device.addBarrier(vkPipelineStageTransferBit, vkPipelineStageComputeShaderBit, vkAccessTransferWriteBit, vkAccessShaderReadBit)
 	}
 
-	vkCmdBindPipeline(device.commandBuffer, vkPipelineBindPointCompute, device.pipeline)
+	pipeline := device.pipeline
+	if device.usesFewRowsShader(sizes) {
+		pipeline = device.fewRowsPipeline
+	}
+	vkCmdBindPipeline(device.commandBuffer, vkPipelineBindPointCompute, pipeline)
 	descriptorSet := new(uint64)
 	*descriptorSet = device.descriptorSet
 	vkCmdBindDescriptorSets(device.commandBuffer, vkPipelineBindPointCompute, device.pipelineLayout, 0, 1, descriptorSet, 0, nil)
 	vkCmdPushConstants(device.commandBuffer, device.pipelineLayout, vkShaderStageComputeBit, 0, uint32(unsafe.Sizeof(*sizes)), unsafe.Pointer(sizes))
 
-	groupsAcross := (sizes.columns + 63) / 64
-	groupsDown := (sizes.rows + 63) / 64
+	groupsAcross, groupsDown, _ := device.workGroupsFor(sizes)
 	vkCmdDispatch(device.commandBuffer, groupsAcross, groupsDown, 1)
 
 	if device.useStagingBuffers {
@@ -584,7 +646,7 @@ func (device *Device) submitAndWait() error {
 	return checkResult("vkResetFences", vkResetFences(device.logicalDevice, 1, fence))
 }
 
-func (device *Device) multiplyOnGPU(first vectormath.Matrix, second vectormath.Matrix, rows int, inner int, columns int, firstIsTransposed bool, secondIsTransposed bool) (vectormath.Matrix, error) {
+func (device *Device) multiplyOnGPU(first vectormath.Matrix, second vectormath.Matrix, rows int, inner int, columns int, firstIsTransposed bool, secondIsTransposed bool, residentSecond *cachedWeights) (vectormath.Matrix, error) {
 	firstSize := uint64(len(first.Values)) * 4
 	secondSize := uint64(len(second.Values)) * 4
 	resultSize := uint64(rows) * uint64(columns) * 4
@@ -593,14 +655,29 @@ func (device *Device) multiplyOnGPU(first vectormath.Matrix, second vectormath.M
 			return vectormath.Matrix{}, fmt.Errorf("a matrix needs %d bytes but the GPU allows %d per buffer", size, device.maxStorageBufferRange)
 		}
 	}
-	if uint64((columns+63)/64) > uint64(device.maxWorkGroupCount[0]) || uint64((rows+63)/64) > uint64(device.maxWorkGroupCount[1]) {
+	sizes := &pushConstants{
+		rows:               uint32(rows),
+		inner:              uint32(inner),
+		columns:            uint32(columns),
+		firstIsTransposed:  boolToUint32(firstIsTransposed),
+		secondIsTransposed: boolToUint32(secondIsTransposed),
+	}
+	if _, _, fits := device.workGroupsFor(sizes); !fits {
 		return vectormath.Matrix{}, fmt.Errorf("the result is %dx%d, which is too big for one GPU dispatch", rows, columns)
 	}
 
-	if err := device.makeAllBuffersBigEnough(firstSize, secondSize, resultSize); err != nil {
+	secondUploadSize := secondSize
+	if residentSecond != nil {
+		secondUploadSize = 0
+	}
+	if err := device.makeAllBuffersBigEnough(firstSize, secondUploadSize, resultSize); err != nil {
 		return vectormath.Matrix{}, err
 	}
-	device.updateDescriptors()
+	secondBinding := &device.secondBuffer
+	if residentSecond != nil {
+		secondBinding = &residentSecond.buffer
+	}
+	device.updateDescriptors(secondBinding)
 
 	uploadFirst := &device.firstBuffer
 	uploadSecond := &device.secondBuffer
@@ -611,22 +688,17 @@ func (device *Device) multiplyOnGPU(first vectormath.Matrix, second vectormath.M
 		download = &device.resultStaging
 	}
 	writeValues(uploadFirst, first.Values)
-	writeValues(uploadSecond, second.Values)
 	if err := device.flushIfNeeded(uploadFirst); err != nil {
 		return vectormath.Matrix{}, err
 	}
-	if err := device.flushIfNeeded(uploadSecond); err != nil {
-		return vectormath.Matrix{}, err
+	if residentSecond == nil {
+		writeValues(uploadSecond, second.Values)
+		if err := device.flushIfNeeded(uploadSecond); err != nil {
+			return vectormath.Matrix{}, err
+		}
 	}
 
-	sizes := &pushConstants{
-		rows:               uint32(rows),
-		inner:              uint32(inner),
-		columns:            uint32(columns),
-		firstIsTransposed:  boolToUint32(firstIsTransposed),
-		secondIsTransposed: boolToUint32(secondIsTransposed),
-	}
-	if err := device.recordCommands(sizes, firstSize, secondSize, resultSize); err != nil {
+	if err := device.recordCommands(sizes, firstSize, secondSize, resultSize, residentSecond == nil); err != nil {
 		return vectormath.Matrix{}, err
 	}
 	if err := device.submitAndWait(); err != nil {
@@ -651,7 +723,7 @@ func (device *Device) multiplyOrUseCPU(first vectormath.Matrix, second vectormat
 	if device.closed {
 		return multiplyOnCPU(first, second)
 	}
-	result, err := device.multiplyOnGPU(first, second, rows, inner, columns, firstIsTransposed, secondIsTransposed)
+	result, err := device.multiplyOnGPU(first, second, rows, inner, columns, firstIsTransposed, secondIsTransposed, nil)
 	if err != nil {
 		device.lastError = err
 		return multiplyOnCPU(first, second)
@@ -695,6 +767,7 @@ func (device *Device) Close() {
 
 	if device.logicalDevice != 0 {
 		vkDeviceWaitIdle(device.logicalDevice)
+		device.forgetAllWeights()
 		for _, buffer := range []*gpuBuffer{&device.firstBuffer, &device.secondBuffer, &device.resultBuffer, &device.firstStaging, &device.secondStaging, &device.resultStaging} {
 			device.destroyBuffer(buffer)
 		}
@@ -709,6 +782,12 @@ func (device *Device) Close() {
 		}
 		if device.pipeline != 0 {
 			vkDestroyPipeline(device.logicalDevice, device.pipeline, nil)
+		}
+		if device.fewRowsPipeline != 0 {
+			vkDestroyPipeline(device.logicalDevice, device.fewRowsPipeline, nil)
+		}
+		if device.fewRowsShaderModule != 0 {
+			vkDestroyShaderModule(device.logicalDevice, device.fewRowsShaderModule, nil)
 		}
 		if device.pipelineLayout != 0 {
 			vkDestroyPipelineLayout(device.logicalDevice, device.pipelineLayout, nil)

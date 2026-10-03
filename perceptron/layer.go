@@ -61,7 +61,7 @@ func (layer *Layer) Forward(inputs vectormath.Matrix) vectormath.Matrix {
 		panic(fmt.Sprintf("layer %q: each input row has %d values but the layer takes %d inputs", layer.Name, inputs.Columns, layer.NumberOfInputs()))
 	}
 
-	preActivations := vectormath.MatrixTimesTransposed(inputs, layer.Weights)
+	preActivations := vectormath.MatrixTimesTransposedWeights(inputs, layer.Weights)
 	outputs := vectormath.NewMatrix(inputs.Rows, layer.NumberOfOutputs())
 	for example := 0; example < inputs.Rows; example++ {
 		examplePreActivations := preActivations.Row(example)
@@ -100,7 +100,7 @@ func (layer *Layer) Backward(outputGradients vectormath.Matrix) vectormath.Matri
 		layer.WeightGradients.Values[i] += weightGradients.Values[i]
 	}
 
-	return vectormath.MatrixTimesMatrix(preActivationGradients, layer.Weights)
+	return vectormath.MatrixTimesWeights(preActivationGradients, layer.Weights)
 }
 
 func (layer *Layer) Parameters() []parameter.Parameter {

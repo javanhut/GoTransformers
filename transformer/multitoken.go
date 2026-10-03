@@ -5,7 +5,6 @@ import (
 	"transformer/attention"
 	"transformer/embedding"
 	"transformer/feedforward"
-	"transformer/lossfunction"
 	"transformer/normalization"
 	"transformer/parameter"
 	"transformer/perceptron"
@@ -73,10 +72,9 @@ type multiTokenMemory struct {
 	secondGradients vectormath.Matrix
 }
 
-func (model *Model) multiTokenForward(tokenIDs []int) (float64, multiTokenMemory) {
+func (model *Model) multiTokenForward(tokenIDs []int, firstCountedToken int) (float64, multiTokenMemory) {
 	inputIDs := tokenIDs[:len(tokenIDs)-1]
 	numberOfInputs := len(inputIDs)
-	vocabularySize := model.Settings.VocabularySize
 
 	hidden := model.hiddenStates(inputIDs)
 	mainNormalized := model.FinalNorm.Forward(hidden)
@@ -85,17 +83,16 @@ func (model *Model) multiTokenForward(tokenIDs []int) (float64, multiTokenMemory
 
 	allScores := model.OutputLayer.Forward(vectormath.StackRows(mainNormalized, secondTokenHidden))
 	mainScores, secondScores := vectormath.SplitRows(allScores, numberOfInputs)
-	mainTargets := OneHotTargets(tokenIDs[1:], vocabularySize)
-	secondTargets := OneHotTargets(tokenIDs[2:], vocabularySize)
+	mainLoss, mainGradients := maskedCrossEntropy(mainScores, tokenIDs[1:], countedRows(numberOfInputs, 1, firstCountedToken))
+	secondLoss, secondGradients := maskedCrossEntropy(secondScores, tokenIDs[2:], countedRows(numberOfInputs-1, 2, firstCountedToken))
 
 	weight := model.Settings.MultiTokenLossWeight
-	loss := lossfunction.SoftmaxCrossEntropy.Calculate(mainScores, mainTargets) + weight*lossfunction.SoftmaxCrossEntropy.Calculate(secondScores, secondTargets)
 	memory := multiTokenMemory{
 		numberOfInputs:  numberOfInputs,
-		mainGradients:   lossfunction.SoftmaxCrossEntropy.Gradient(mainScores, mainTargets),
-		secondGradients: vectormath.ScaleMatrix(lossfunction.SoftmaxCrossEntropy.Gradient(secondScores, secondTargets), weight),
+		mainGradients:   mainGradients,
+		secondGradients: vectormath.ScaleMatrix(secondGradients, weight),
 	}
-	return loss, memory
+	return mainLoss + weight*secondLoss, memory
 }
 
 func (model *Model) multiTokenBackward(memory multiTokenMemory) {

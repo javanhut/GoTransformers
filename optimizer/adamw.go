@@ -3,6 +3,7 @@ package optimizer
 import (
 	"math"
 	"transformer/parameter"
+	"transformer/vectormath"
 )
 
 type AdamW struct {
@@ -29,6 +30,7 @@ func NewAdamW(learningRate float64, weightDecay float64) *AdamW {
 }
 
 func (adamW *AdamW) Update(parameters []parameter.Parameter) {
+	defer vectormath.MarkWeightsChanged()
 	checkNamesAreUnique(parameters)
 	if adamW.averageGradients == nil {
 		adamW.averageGradients = map[string][]float64{}

@@ -1,0 +1,66 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer FirstBuffer {
+    float firstValues[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer SecondBuffer {
+    float secondValues[];
+};
+
+layout(std430, set = 0, binding = 2) writeonly buffer ResultBuffer {
+    float resultValues[];
+};
+
+layout(push_constant) uniform Sizes {
+    uint rows;
+    uint inner;
+    uint columns;
+    uint firstIsTransposed;
+    uint secondIsTransposed;
+} sizes;
+
+const uint largestNumberOfRows = 8;
+const uint threadsInGroup = 256;
+
+shared float partialSums[largestNumberOfRows][threadsInGroup];
+
+void main() {
+    uint groupNumber = gl_WorkGroupID.x + gl_WorkGroupID.y * gl_NumWorkGroups.x;
+    uint thread = gl_LocalInvocationID.x;
+
+    float sums[largestNumberOfRows];
+    for (uint row = 0; row < largestNumberOfRows; row++) {
+        sums[row] = 0.0;
+    }
+
+    uint column = groupNumber;
+    if (column >= sizes.columns) {
+        return;
+    }
+    for (uint step = thread; step < sizes.inner; step += threadsInGroup) {
+        float secondValue = secondValues[column * sizes.inner + step];
+        for (uint row = 0; row < sizes.rows; row++) {
+            sums[row] += firstValues[row * sizes.inner + step] * secondValue;
+        }
+    }
+    for (uint row = 0; row < largestNumberOfRows; row++) {
+        partialSums[row][thread] = sums[row];
+    }
+    barrier();
+    for (uint distance = threadsInGroup / 2; distance > 0; distance /= 2) {
+        if (thread < distance) {
+            for (uint row = 0; row < sizes.rows; row++) {
+                partialSums[row][thread] += partialSums[row][thread + distance];
+            }
+        }
+        barrier();
+    }
+    if (thread == 0) {
+        for (uint row = 0; row < sizes.rows; row++) {
+            resultValues[row * sizes.columns + column] = partialSums[row][0];
+        }
+    }
+}

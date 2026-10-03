@@ -186,6 +186,10 @@ func (compressed *CompressedAttention) rotaryDimensions() int {
 	return compressed.RotaryDimensions
 }
 
+func (compressed *CompressedAttention) rotary() rotarySettings {
+	return rotarySettings{dimensions: compressed.rotaryDimensions(), base: rotaryBase}
+}
+
 func (compressed *CompressedAttention) scale() float64 {
 	return 1 / math.Sqrt(float64(compressed.HeadSize()))
 }
@@ -222,7 +226,7 @@ func (compressed *CompressedAttention) rotateRowsAt(matrix vectormath.Matrix, nu
 	rotated := vectormath.NewMatrix(matrix.Rows, matrix.Columns)
 	headSize := matrix.Columns / numberOfHeads
 	for row := 0; row < matrix.Rows; row++ {
-		rotated.SetRow(row, rotateEachHead(matrix.Row(row), positionOfRow(row), numberOfHeads, headSize, compressed.rotaryDimensions(), direction))
+		rotated.SetRow(row, rotateEachHead(matrix.Row(row), positionOfRow(row), numberOfHeads, headSize, compressed.rotary(), direction))
 	}
 	return rotated
 }
@@ -231,7 +235,7 @@ func (compressed *CompressedAttention) rotateVectorAt(vector vectormath.Vector, 
 	if !compressed.UseRotaryPositions {
 		return vector
 	}
-	return rotateEachHead(vector, position, numberOfHeads, len(vector)/numberOfHeads, compressed.rotaryDimensions(), direction)
+	return rotateEachHead(vector, position, numberOfHeads, len(vector)/numberOfHeads, compressed.rotary(), direction)
 }
 
 func samePosition(row int) int {
