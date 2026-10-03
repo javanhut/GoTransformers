@@ -67,10 +67,7 @@ func SplitAcrossThreads(numberOfItems int, workPerItem int, doItems func(firstIt
 	itemsPerThread := (numberOfItems + numberOfThreads - 1) / numberOfThreads
 	var waitGroup sync.WaitGroup
 	for firstItem := 0; firstItem < numberOfItems; firstItem += itemsPerThread {
-		lastItem := firstItem + itemsPerThread
-		if lastItem > numberOfItems {
-			lastItem = numberOfItems
-		}
+		lastItem := min(firstItem+itemsPerThread, numberOfItems)
 		waitGroup.Add(1)
 		go func(firstItem int, lastItem int) {
 			defer waitGroup.Done()

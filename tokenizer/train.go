@@ -53,7 +53,7 @@ func (pairs *pairHeap) Pop() any {
 
 func Train(text string, vocabularySize int) *Tokenizer {
 	tokenizer := newEmptyTokenizer([]preTokenizerStep{{splitStyle: GPT2Split}})
-	for value := 0; value < 256; value++ {
+	for value := range 256 {
 		tokenizer.setToken(value, string(byteToCharacter[value]))
 	}
 

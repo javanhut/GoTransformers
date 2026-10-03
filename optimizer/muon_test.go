@@ -68,11 +68,11 @@ func solveLeastSquares(chosenOptimizer Optimizer, steps int, learningRateAt func
 	weights := parameter.Parameter{
 		Name:            "weights",
 		Values:          make([]float64, 12),
-		GradientStorage: pointerTo(make([]float64, 12)),
+		GradientStorage: new(make([]float64, 12)),
 		Rows:            3,
 		Columns:         4,
 	}
-	for step := 0; step < steps; step++ {
+	for step := range steps {
 		setLearningRate(learningRateAt(step))
 		current := vectormath.Matrix{Rows: 3, Columns: 4, Values: weights.Values}
 		errors := vectormath.SubtractMatrices(vectormath.MatrixTimesMatrix(current, inputs), targets)
@@ -112,10 +112,10 @@ func TestMatrixLeastSquares(t *testing.T) {
 }
 
 func TestAdamWOnlyDecaysMatrices(t *testing.T) {
-	vector := parameter.Parameter{Name: "biases", Values: []float64{1, 2, 3}, GradientStorage: pointerTo(make([]float64, 3))}
-	matrix := parameter.Parameter{Name: "weights", Values: []float64{1, 1, 1, 1}, GradientStorage: pointerTo(make([]float64, 4)), Rows: 2, Columns: 2}
+	vector := parameter.Parameter{Name: "biases", Values: []float64{1, 2, 3}, GradientStorage: new(make([]float64, 3))}
+	matrix := parameter.Parameter{Name: "weights", Values: []float64{1, 1, 1, 1}, GradientStorage: new(make([]float64, 4)), Rows: 2, Columns: 2}
 	adamW := NewAdamW(0.1, 0.5)
-	for step := 0; step < 10; step++ {
+	for range 10 {
 		adamW.Update([]parameter.Parameter{vector, matrix})
 	}
 	if vector.Values[0] != 1 || vector.Values[1] != 2 || vector.Values[2] != 3 {
@@ -132,7 +132,7 @@ func TestMuonSendsUseAdamWParametersToAdamW(t *testing.T) {
 		return parameter.Parameter{
 			Name:            "tokens.table",
 			Values:          []float64{0.5, -0.25, 1, 2, -1, 0.75},
-			GradientStorage: pointerTo([]float64{0.1, -0.3, 0.2, 0.05, -0.4, 0.6}),
+			GradientStorage: new([]float64{0.1, -0.3, 0.2, 0.05, -0.4, 0.6}),
 			Rows:            2,
 			Columns:         3,
 			UseAdamW:        true,
@@ -142,7 +142,7 @@ func TestMuonSendsUseAdamWParametersToAdamW(t *testing.T) {
 	throughAdamW := makeEmbedding()
 	muon := NewMuon(0.01)
 	adamW := NewAdamW(0.01, 0.1)
-	for step := 0; step < 5; step++ {
+	for range 5 {
 		muon.Update([]parameter.Parameter{throughMuon})
 		adamW.Update([]parameter.Parameter{throughAdamW})
 	}
@@ -160,7 +160,7 @@ func TestMuonUpdateHasTheRightSize(t *testing.T) {
 	weights := parameter.Parameter{
 		Name:            "weights",
 		Values:          make([]float64, 6*10),
-		GradientStorage: pointerTo(vectormath.NewRandomMatrix(6, 10, -1, 1).Values),
+		GradientStorage: new(vectormath.NewRandomMatrix(6, 10, -1, 1).Values),
 		Rows:            6,
 		Columns:         10,
 	}

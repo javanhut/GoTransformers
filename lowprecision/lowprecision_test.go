@@ -16,7 +16,7 @@ func TestRowsKeepValuesCloseEnough(t *testing.T) {
 	for precision, allowed := range allowedError {
 		rows := NewRows(precision, 37)
 		var saved []vectormath.Vector
-		for row := 0; row < 5; row++ {
+		for range 5 {
 			values := vectormath.NewVector(37)
 			for i := range values {
 				values[i] = vectormath.RandomNumberBetween(-3, 3)
@@ -50,7 +50,7 @@ func TestLowerPrecisionUsesLessMemory(t *testing.T) {
 	bytesUsed := map[Precision]int{}
 	for _, precision := range []Precision{Float64, Float32, Int8, FP4} {
 		rows := NewRows(precision, 64)
-		for row := 0; row < 10; row++ {
+		for range 10 {
 			rows.Append(vectormath.NewVector(64))
 		}
 		bytesUsed[precision] = rows.BytesUsed()
@@ -66,7 +66,7 @@ func TestLowerPrecisionUsesLessMemory(t *testing.T) {
 func TestDropOldestRows(t *testing.T) {
 	for _, precision := range []Precision{Float64, Float32, Int8, FP4} {
 		rows := NewRows(precision, 3)
-		for row := 0; row < 5; row++ {
+		for row := range 5 {
 			rows.Append(vectormath.Vector{float64(row), 0, 0})
 		}
 		rows.DropOldestRows(2)
@@ -82,7 +82,7 @@ func TestDropOldestRows(t *testing.T) {
 func TestDotRowMatchesReadingTheRow(t *testing.T) {
 	for _, precision := range []Precision{Float64, Float32, Int8, FP4} {
 		rows := NewRows(precision, 37)
-		for row := 0; row < 4; row++ {
+		for range 4 {
 			values := vectormath.NewVector(37)
 			for i := range values {
 				values[i] = vectormath.RandomNumberBetween(-3, 3)
@@ -93,7 +93,7 @@ func TestDotRowMatchesReadingTheRow(t *testing.T) {
 		for i := range vector {
 			vector[i] = vectormath.RandomNumberBetween(-1, 1)
 		}
-		for row := 0; row < 4; row++ {
+		for row := range 4 {
 			want := vectormath.DotProduct(rows.Row(row), vector)
 			if got := rows.DotRow(row, vector); math.Abs(got-want) > 1e-9 {
 				t.Errorf("%v row %d: DotRow gave %v, reading the row and multiplying gave %v", precision, row, got, want)

@@ -270,7 +270,7 @@ func (compressed *CompressedAttention) blockSources(block int, entries vectormat
 
 func (compressed *CompressedAttention) chooseBlocks(visibleBlocks int, indexerScore func(int) float64, attendToAll bool) []int {
 	var candidates []int
-	for block := 0; block < visibleBlocks; block++ {
+	for block := range visibleBlocks {
 		candidates = append(candidates, block)
 	}
 	if compressed.TopK == 0 || attendToAll || len(candidates) <= compressed.TopK {
@@ -357,7 +357,7 @@ func (compressed *CompressedAttention) Forward(inputs vectormath.Matrix) vectorm
 	}
 
 	compressedRaw := vectormath.NewMatrix(numberOfBlocks, compressed.HeadSize())
-	for block := 0; block < numberOfBlocks; block++ {
+	for block := range numberOfBlocks {
 		sources := compressed.blockSources(block, memory.rawEntries, memory.rawWeights, memory.overlapEntries, memory.overlapWeights)
 		entry, softmaxWeights := compress(sources, compressed.HeadSize())
 		compressedRaw.SetRow(block, entry)
@@ -385,7 +385,7 @@ func (compressed *CompressedAttention) Forward(inputs vectormath.Matrix) vectorm
 	memory.entriesForPosition = make([][]entryReference, sequenceLength)
 	memory.chosenBlocks = make([][]int, sequenceLength)
 	memory.looked = make([][]compressedLookedAt, sequenceLength)
-	for position := 0; position < sequenceLength; position++ {
+	for position := range sequenceLength {
 		visibleBlocks := position / compressed.CompressionRate
 		indexerScore := func(block int) float64 {
 			return indexerScoreOf(memory.indexerQueries.Row(position), memory.indexerHeadWeights.Row(position), memory.indexerKeys.Row(block))
@@ -397,10 +397,7 @@ func (compressed *CompressedAttention) Forward(inputs vectormath.Matrix) vectorm
 		for _, block := range chosen {
 			references = append(references, entryReference{fromBlock: true, index: block})
 		}
-		windowStart := position - compressed.WindowSize + 1
-		if windowStart < 0 {
-			windowStart = 0
-		}
+		windowStart := max(position-compressed.WindowSize+1, 0)
 		for windowPosition := windowStart; windowPosition <= position; windowPosition++ {
 			references = append(references, entryReference{fromBlock: false, index: windowPosition})
 		}

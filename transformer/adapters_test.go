@@ -80,7 +80,7 @@ func TestAdaptersLearnWhileTheBaseStaysFrozen(t *testing.T) {
 			{PromptIDs: []int{4, 5, 6}, AnswerIDs: []int{9, 10, 0}},
 		}
 		adam := optimizer.NewAdam(0.02)
-		for step := 0; step < 200; step++ {
+		for range 200 {
 			model.TrainOnExamples(examples, adam)
 		}
 		for _, example := range examples {
@@ -113,7 +113,7 @@ func TestSaveAndLoadAdapters(t *testing.T) {
 
 	trained.AddLowRankAdapters(2, 4)
 	adam := optimizer.NewAdam(0.02)
-	for step := 0; step < 20; step++ {
+	for range 20 {
 		trained.TrainStep([]int{1, 2, 3, 4, 5}, adam)
 	}
 	path := filepath.Join(t.TempDir(), "task.adapters")

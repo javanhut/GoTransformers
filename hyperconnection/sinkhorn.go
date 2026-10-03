@@ -1,6 +1,8 @@
 package hyperconnection
 
 import (
+	"slices"
+
 	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
 )
@@ -18,7 +20,7 @@ func sinkhornKnopp(raw vectormath.Matrix, steps int) (vectormath.Matrix, sinkhor
 		current.Values[i] = math.Exp(value - largest)
 	}
 	record := sinkhornRecord{start: current}
-	for step := 0; step < steps; step++ {
+	for range steps {
 		current = normalizeColumns(current)
 		record.afterColumns = append(record.afterColumns, current)
 		current = normalizeRows(current)
@@ -96,8 +98,8 @@ func normalizeRowsBackward(input vectormath.Matrix, output vectormath.Matrix, ou
 
 func sinkhornKnoppBackward(record sinkhornRecord, resultGradients vectormath.Matrix) vectormath.Matrix {
 	gradients := resultGradients
-	for step := len(record.afterRows) - 1; step >= 0; step-- {
-		gradients = normalizeRowsBackward(record.afterColumns[step], record.afterRows[step], gradients)
+	for step, v := range slices.Backward(record.afterRows) {
+		gradients = normalizeRowsBackward(record.afterColumns[step], v, gradients)
 		columnInput := record.start
 		if step > 0 {
 			columnInput = record.afterRows[step-1]

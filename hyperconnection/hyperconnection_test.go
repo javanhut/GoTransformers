@@ -62,7 +62,7 @@ func TestGradients(t *testing.T) {
 				if shaken {
 					shakeUp(wrapped.connection)
 				}
-				for attempt := 0; attempt < 3; attempt++ {
+				for range 3 {
 					streams := vectormath.NewRandomMatrix(3, numberOfStreams*3, -1, 1)
 					for _, problem := range gradientcheck.Compare(wrapped.Forward, wrapped.Backward, wrapped.Parameters(), streams) {
 						t.Errorf("streams=%d steps=%d shaken=%v: %s", numberOfStreams, sinkhornSteps, shaken, problem)
@@ -78,12 +78,12 @@ func worstSumErrors(connection *HyperConnection, numberOfTokens int) (float64, f
 	worstColumnError := 0.0
 	allNonNegative := true
 	streams := connection.NumberOfStreams
-	for token := 0; token < numberOfTokens; token++ {
+	for token := range numberOfTokens {
 		mixing := connection.LastResidualMixing(token)
-		for row := 0; row < streams; row++ {
+		for row := range streams {
 			rowSum := 0.0
 			columnSum := 0.0
-			for column := 0; column < streams; column++ {
+			for column := range streams {
 				if mixing.Get(row, column) < 0 {
 					allNonNegative = false
 				}
@@ -120,7 +120,7 @@ func TestOneTokenMatchesManyTokens(t *testing.T) {
 	shakeUp(wrapped.connection)
 	streams := vectormath.NewRandomMatrix(5, 12, -1, 1)
 	allAtOnce := wrapped.Forward(streams)
-	for token := 0; token < 5; token++ {
+	for token := range 5 {
 		oneRow := vectormath.MatrixFromRows([]vectormath.Vector{streams.Row(token)})
 		alone := wrapped.Forward(oneRow).Row(0)
 		for i, value := range alone {
@@ -141,12 +141,12 @@ func TestStartsLikeANormalResidualConnection(t *testing.T) {
 
 	layerInput := connection.LayerInput(ExpandToStreams(inputs, 4))
 	newStreams := connection.Combine(layerOutput)
-	for token := 0; token < 3; token++ {
-		for i := 0; i < 4; i++ {
+	for token := range 3 {
+		for i := range 4 {
 			if math.Abs(layerInput.Get(token, i)-inputs.Get(token, i)) > 1e-12 {
 				t.Errorf("layer input %v, want the original input %v", layerInput.Get(token, i), inputs.Get(token, i))
 			}
-			for stream := 0; stream < 4; stream++ {
+			for stream := range 4 {
 				want := inputs.Get(token, i) + layerOutput.Get(token, i)
 				if math.Abs(newStreams.Get(token, stream*4+i)-want) > 1e-12 {
 					t.Errorf("stream %d got %v, want input + layer output = %v", stream, newStreams.Get(token, stream*4+i), want)

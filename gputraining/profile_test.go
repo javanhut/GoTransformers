@@ -30,7 +30,7 @@ func TestProfileTrainingStep(t *testing.T) {
 	}
 	defer trainer.Close()
 	text := randomSequence(20000, 4096)
-	for step := 0; step < 30; step++ {
+	for range 30 {
 		trainer.TrainBatch(transformer.RandomChunks(text, 129, 4))
 	}
 	if err := trainer.recorder.MeasureTime(true); err != nil {

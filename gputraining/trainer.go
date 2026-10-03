@@ -12,6 +12,7 @@ import (
 	"github.com/javanhut/GoTransformers/transformer"
 	"github.com/javanhut/GoTransformers/vectormath"
 	"math"
+	"slices"
 	"strings"
 )
 
@@ -754,8 +755,8 @@ func (trainer *Trainer) trainOnExamples(examples []transformer.Example) (float64
 
 	outputGradients := shared.firstGradients
 	middleGradients := shared.secondGradients
-	for blockIndex := len(trainer.blocks) - 1; blockIndex >= 0; blockIndex-- {
-		block := trainer.blocks[blockIndex]
+	for blockIndex, block := range slices.Backward(trainer.blocks) {
+
 		activations := trainer.activations[blockIndex]
 
 		trainer.linearBackward(block.down, activations.hidden, outputGradients, shared.hiddenGradients, rows, false)

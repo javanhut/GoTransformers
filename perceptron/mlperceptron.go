@@ -7,6 +7,7 @@ import (
 	"github.com/javanhut/GoTransformers/optimizer"
 	"github.com/javanhut/GoTransformers/parameter"
 	"github.com/javanhut/GoTransformers/vectormath"
+	"slices"
 )
 
 type MultiLayerPerceptron struct {
@@ -43,8 +44,8 @@ func (network *MultiLayerPerceptron) Forward(inputs vectormath.Matrix) vectormat
 
 func (network *MultiLayerPerceptron) Backward(outputGradients vectormath.Matrix) vectormath.Matrix {
 	gradients := outputGradients
-	for i := len(network.Layers) - 1; i >= 0; i-- {
-		gradients = network.Layers[i].Backward(gradients)
+	for _, v := range slices.Backward(network.Layers) {
+		gradients = v.Backward(gradients)
 	}
 	return gradients
 }

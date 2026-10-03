@@ -14,7 +14,7 @@ func ExpandToStreams(inputs vectormath.Matrix, numberOfStreams int) vectormath.M
 	for token := 0; token < inputs.Rows; token++ {
 		input := inputs.Row(token)
 		streamRow := streams.Row(token)
-		for stream := 0; stream < numberOfStreams; stream++ {
+		for stream := range numberOfStreams {
 			copy(streamRow[stream*vectorSize:(stream+1)*vectorSize], input)
 		}
 	}
@@ -27,8 +27,8 @@ func ExpandToStreamsBackward(streamGradients vectormath.Matrix, numberOfStreams 
 	for token := 0; token < streamGradients.Rows; token++ {
 		gradientRow := streamGradients.Row(token)
 		inputGradientRow := inputGradients.Row(token)
-		for stream := 0; stream < numberOfStreams; stream++ {
-			for i := 0; i < vectorSize; i++ {
+		for stream := range numberOfStreams {
+			for i := range vectorSize {
 				inputGradientRow[i] += gradientRow[stream*vectorSize+i]
 			}
 		}
@@ -42,8 +42,8 @@ func CollapseStreams(streams vectormath.Matrix, numberOfStreams int) vectormath.
 	for token := 0; token < streams.Rows; token++ {
 		streamRow := streams.Row(token)
 		outputRow := outputs.Row(token)
-		for stream := 0; stream < numberOfStreams; stream++ {
-			for i := 0; i < vectorSize; i++ {
+		for stream := range numberOfStreams {
+			for i := range vectorSize {
 				outputRow[i] += streamRow[stream*vectorSize+i] / float64(numberOfStreams)
 			}
 		}
@@ -60,8 +60,8 @@ func CollapseStreamsBackward(outputGradients vectormath.Matrix, numberOfStreams 
 	for token := 0; token < outputGradients.Rows; token++ {
 		outputGradientRow := outputGradients.Row(token)
 		streamGradientRow := streamGradients.Row(token)
-		for stream := 0; stream < numberOfStreams; stream++ {
-			for i := 0; i < vectorSize; i++ {
+		for stream := range numberOfStreams {
+			for i := range vectorSize {
 				streamGradientRow[stream*vectorSize+i] = outputGradientRow[i] / float64(numberOfStreams)
 			}
 		}

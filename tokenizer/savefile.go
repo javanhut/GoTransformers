@@ -140,7 +140,7 @@ func LoadFromFile(path string) (*Tokenizer, error) {
 		return nil, err
 	}
 	var steps []preTokenizerStep
-	for i := 0; i < numberOfSteps; i++ {
+	for range numberOfSteps {
 		splitStyle, digits, err := reader.quotedPair()
 		if err != nil {
 			return nil, err
@@ -155,7 +155,7 @@ func LoadFromFile(path string) (*Tokenizer, error) {
 	if err != nil {
 		return nil, err
 	}
-	for id := 0; id < vocabularySize; id++ {
+	for id := range vocabularySize {
 		line, err := reader.next()
 		if err != nil {
 			return nil, err
@@ -171,7 +171,7 @@ func LoadFromFile(path string) (*Tokenizer, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := 0; i < numberOfMerges; i++ {
+	for range numberOfMerges {
 		left, right, err := reader.quotedPair()
 		if err != nil {
 			return nil, err
@@ -183,7 +183,7 @@ func LoadFromFile(path string) (*Tokenizer, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := 0; i < numberOfSpecial; i++ {
+	for range numberOfSpecial {
 		line, err := reader.next()
 		if err != nil {
 			return nil, err

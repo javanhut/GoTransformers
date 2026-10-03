@@ -21,7 +21,7 @@ func rotateOneHead(headValues vectormath.Vector, position int, rotary rotarySett
 	headSize := len(headValues)
 	firstRotated := headSize - rotary.dimensions
 	half := rotary.dimensions / 2
-	for pair := 0; pair < half; pair++ {
+	for pair := range half {
 		frequency := math.Pow(rotary.base, -float64(2*pair)/float64(rotary.dimensions))
 		angle := float64(position) * frequency * direction
 		firstIndex := firstRotated + 2*pair
@@ -39,7 +39,7 @@ func rotateOneHead(headValues vectormath.Vector, position int, rotary rotarySett
 
 func rotateEachHead(vector vectormath.Vector, position int, numberOfHeads int, headSize int, rotary rotarySettings, direction float64) vectormath.Vector {
 	rotated := vectormath.CopyVector(vector)
-	for head := 0; head < numberOfHeads; head++ {
+	for head := range numberOfHeads {
 		rotateOneHead(headSlice(rotated, head, headSize), position, rotary, direction)
 	}
 	return rotated

@@ -130,12 +130,12 @@ func TestUpdateBalanceEvensOutLoad(t *testing.T) {
 		}
 	}
 
-	for step := 0; step < 300; step++ {
+	for range 300 {
 		mixture.Forward(inputs, nil)
 		mixture.UpdateBalance(0.05)
 	}
 	totalImbalance := 0
-	for step := 0; step < 50; step++ {
+	for range 50 {
 		mixture.Forward(inputs, nil)
 		totalImbalance += imbalance(mixture.LastExpertLoad())
 		mixture.UpdateBalance(0.05)

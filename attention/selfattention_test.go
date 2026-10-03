@@ -1,6 +1,8 @@
 package attention
 
 import (
+	"slices"
+
 	"github.com/javanhut/GoTransformers/gradientcheck"
 	"github.com/javanhut/GoTransformers/lowprecision"
 	"github.com/javanhut/GoTransformers/parameter"
@@ -23,8 +25,8 @@ func (layers stack) Forward(inputs vectormath.Matrix) vectormath.Matrix {
 
 func (layers stack) Backward(outputGradients vectormath.Matrix) vectormath.Matrix {
 	gradients := outputGradients
-	for i := len(layers.layers) - 1; i >= 0; i-- {
-		gradients = vectormath.AddMatrices(gradients, layers.layers[i].Backward(gradients))
+	for _, v := range slices.Backward(layers.layers) {
+		gradients = vectormath.AddMatrices(gradients, v.Backward(gradients))
 	}
 	return gradients
 }
@@ -222,7 +224,7 @@ func TestGeneratingOneTokenAtATimeMatchesTraining(t *testing.T) {
 func TestWindowKeepsTheCacheSmall(t *testing.T) {
 	layer := withSettings(3, 0)
 	layer.StartGenerating()
-	for position := 0; position < 20; position++ {
+	for range 20 {
 		layer.ForwardOneToken(vectormath.NewRandomMatrix(1, 8, -1, 1).Row(0))
 	}
 	if layer.generation.keys.NumberOfRows() != 3 {
@@ -236,7 +238,7 @@ func TestLowerPrecisionCacheIsSmaller(t *testing.T) {
 		layer := withSettings(0, 0)
 		layer.CachePrecision = precision
 		layer.StartGenerating()
-		for position := 0; position < 16; position++ {
+		for range 16 {
 			layer.ForwardOneToken(vectormath.NewRandomMatrix(1, 8, -1, 1).Row(0))
 		}
 		bytesUsed[precision] = layer.CacheBytesUsed()
@@ -250,7 +252,7 @@ func TestSmallerCacheOptions(t *testing.T) {
 	cacheBytes := func(options Options) int {
 		layer := withOptions(options)
 		layer.StartGenerating()
-		for position := 0; position < 10; position++ {
+		for range 10 {
 			layer.ForwardOneToken(vectormath.NewRandomMatrix(1, 8, -1, 1).Row(0))
 		}
 		return layer.CacheBytesUsed()
@@ -278,7 +280,7 @@ func TestAttentionSinkCanIgnoreEverything(t *testing.T) {
 func TestTopKOnlyLooksAtK(t *testing.T) {
 	layer := withSettings(0, 2)
 	layer.Forward(vectormath.NewRandomMatrix(6, 8, -1, 1))
-	for position := 0; position < 6; position++ {
+	for position := range 6 {
 		positions, _ := layer.LookedAt(0, position)
 		if len(positions) > 2 {
 			t.Errorf("position %d looked at %v", position, positions)
@@ -289,9 +291,9 @@ func TestTopKOnlyLooksAtK(t *testing.T) {
 func TestHideFutureTokens(t *testing.T) {
 	attention := NewSelfAttention("attention", 4, 2, true)
 	attention.Forward(vectormath.NewRandomMatrix(5, 4, -1, 1))
-	for head := 0; head < 2; head++ {
+	for head := range 2 {
 		weights := attention.LastAttentionWeights(head)
-		for position := 0; position < 5; position++ {
+		for position := range 5 {
 			for otherPosition := position + 1; otherPosition < 5; otherPosition++ {
 				if weights.Get(position, otherPosition) != 0 {
 					t.Errorf("head %d: position %d looked at future position %d", head, position, otherPosition)

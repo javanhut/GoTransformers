@@ -20,7 +20,7 @@ func compress(sources []compressionSource, entrySize int) (vectormath.Vector, []
 	for i := range softmaxWeights {
 		softmaxWeights[i] = make([]float64, entrySize)
 	}
-	for channel := 0; channel < entrySize; channel++ {
+	for channel := range entrySize {
 		largest := math.Inf(-1)
 		for _, source := range sources {
 			logit := source.weight[channel] + source.bias[channel]

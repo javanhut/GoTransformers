@@ -39,7 +39,7 @@ func TestResidentWeightsMatchCPU(t *testing.T) {
 			first := vectormath.NewRandomMatrix(rows, inner, -1, 1)
 			transposedWeights := vectormath.NewRandomMatrix(columns, inner, -1, 1)
 			weights := vectormath.NewRandomMatrix(inner, columns, -1, 1)
-			for repeat := 0; repeat < 2; repeat++ {
+			for range 2 {
 				checkClose(t, "MatrixTimesTransposedWeights", device.MatrixTimesTransposedWeights(first, transposedWeights), cpu.MatrixTimesTransposed(first, transposedWeights), inner)
 				checkClose(t, "MatrixTimesWeights", device.MatrixTimesWeights(first, weights), cpu.MatrixTimesMatrix(first, weights), inner)
 			}
@@ -54,7 +54,7 @@ func TestSameWeightsUploadOnce(t *testing.T) {
 	bothMemoryPaths(t, func(t *testing.T, device *Device) {
 		first := vectormath.NewRandomMatrix(8, 16, -1, 1)
 		weights := vectormath.NewRandomMatrix(32, 16, -1, 1)
-		for repeat := 0; repeat < 5; repeat++ {
+		for range 5 {
 			device.MatrixTimesTransposedWeights(first, weights)
 		}
 		if device.WeightUploads() != 1 || device.WeightCacheHits() != 4 {
@@ -102,10 +102,10 @@ func TestLeastRecentlyUsedWeightsAreEvicted(t *testing.T) {
 		oneMatrixBytes := uint64(32 * 32 * 4)
 		device.WeightCacheLimitBytes = oneMatrixBytes + oneMatrixBytes/2
 		var allWeights []vectormath.Matrix
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			allWeights = append(allWeights, vectormath.NewRandomMatrix(32, 32, -1, 1))
 		}
-		for round := 0; round < 3; round++ {
+		for range 3 {
 			for _, weights := range allWeights {
 				checkClose(t, "evicting", device.MatrixTimesWeights(first, weights), cpu.MatrixTimesMatrix(first, weights), 32)
 				if device.CachedWeightBytes() > device.WeightCacheLimitBytes {
@@ -153,16 +153,16 @@ func TestResidentWeightsFromManyGoroutines(t *testing.T) {
 	repeats := 10
 	ownWeights := make([]vectormath.Matrix, numberOfWorkers)
 	inputs := make([][]vectormath.Matrix, numberOfWorkers)
-	for worker := 0; worker < numberOfWorkers; worker++ {
+	for worker := range numberOfWorkers {
 		ownWeights[worker] = vectormath.NewRandomMatrix(24, 40, -1, 1)
-		for repeat := 0; repeat < repeats; repeat++ {
+		for range repeats {
 			inputs[worker] = append(inputs[worker], vectormath.NewRandomMatrix(5, 24, -1, 1))
 		}
 	}
 
 	var waitGroup sync.WaitGroup
 	problems := make(chan string, numberOfWorkers)
-	for worker := 0; worker < numberOfWorkers; worker++ {
+	for worker := range numberOfWorkers {
 		waitGroup.Add(1)
 		go func(worker int) {
 			defer waitGroup.Done()
@@ -203,7 +203,7 @@ func TestLayerTrainsWithResidentWeights(t *testing.T) {
 	layer := perceptron.NewLayer("layer", 32, 16, activationfunction.Tanh)
 	inputs := vectormath.NewRandomMatrix(8, 32, -1, 1)
 	sgd := optimizer.NewSGD(0.1)
-	for step := 0; step < 3; step++ {
+	for range 3 {
 		parameter.ZeroGradients(layer.Parameters())
 		outputs := layer.Forward(inputs)
 		layer.Backward(outputs)

@@ -74,7 +74,7 @@ func TestCompressedGeneratingMatchesTraining(t *testing.T) {
 
 func TestCompressionWeightsAddUpToOnePerChannel(t *testing.T) {
 	var sources []compressionSource
-	for slot := 0; slot < 5; slot++ {
+	for range 5 {
 		sources = append(sources, compressionSource{
 			entry:  vectormath.NewRandomMatrix(1, 3, -1, 1).Row(0),
 			weight: vectormath.NewRandomMatrix(1, 3, -2, 2).Row(0),
@@ -82,7 +82,7 @@ func TestCompressionWeightsAddUpToOnePerChannel(t *testing.T) {
 		})
 	}
 	_, softmaxWeights := compress(sources, 3)
-	for channel := 0; channel < 3; channel++ {
+	for channel := range 3 {
 		total := 0.0
 		for slot := range sources {
 			total += softmaxWeights[slot][channel]
@@ -107,7 +107,7 @@ func TestIndexerLearnsWhereAttentionLooks(t *testing.T) {
 	adam := optimizer.NewAdam(0.01)
 	compressed.Forward(inputs)
 	firstLoss := compressed.LastIndexerLoss()
-	for step := 0; step < 300; step++ {
+	for range 300 {
 		parameter.ZeroGradients(compressed.Parameters())
 		outputs := compressed.Forward(inputs)
 		compressed.Backward(vectormath.NewMatrix(outputs.Rows, outputs.Columns))
@@ -125,7 +125,7 @@ func TestCompressedCacheIsSmall(t *testing.T) {
 	compressed := newCompressed(CompressedOptions{NumberOfHeads: 2, CompressionRate: 8, WindowSize: 4})
 	full.StartGenerating()
 	compressed.StartGenerating()
-	for position := 0; position < 64; position++ {
+	for range 64 {
 		input := vectormath.NewRandomMatrix(1, 8, -1, 1).Row(0)
 		full.ForwardOneToken(input)
 		compressed.ForwardOneToken(input)

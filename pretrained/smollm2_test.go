@@ -55,7 +55,7 @@ func referenceRMSNorm(values []float64, weights []float64, epsilon float64) []fl
 
 func referenceTimes(weights []float64, outputs int, inputs []float64) []float64 {
 	result := make([]float64, outputs)
-	for row := 0; row < outputs; row++ {
+	for row := range outputs {
 		sum := 0.0
 		for column, input := range inputs {
 			sum += weights[row*len(inputs)+column] * input
@@ -68,7 +68,7 @@ func referenceTimes(weights []float64, outputs int, inputs []float64) []float64 
 func referenceRotateHalf(head []float64, position int, base float64) []float64 {
 	half := len(head) / 2
 	result := make([]float64, len(head))
-	for i := 0; i < half; i++ {
+	for i := range half {
 		angle := float64(position) / math.Pow(base, float64(2*i)/float64(len(head)))
 		first := head[i]
 		second := head[i+half]
@@ -103,7 +103,7 @@ func (reference referenceLlama) lastLogits(tokenIDs []int) []float64 {
 			for head := 0; head < config.NumberOfHeads; head++ {
 				copy(query[head*headSize:(head+1)*headSize], referenceRotateHalf(query[head*headSize:(head+1)*headSize], position, config.RopeTheta))
 			}
-			for head := 0; head < keyValueHeads; head++ {
+			for head := range keyValueHeads {
 				copy(key[head*headSize:(head+1)*headSize], referenceRotateHalf(key[head*headSize:(head+1)*headSize], position, config.RopeTheta))
 			}
 			queries[position] = query

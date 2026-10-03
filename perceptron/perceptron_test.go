@@ -109,7 +109,7 @@ func TestMultiLayerPerceptronLearnsXOR(t *testing.T) {
 	network := NewMultiLayerPerceptron([]int{2, 8, 1}, activationfunction.Tanh, activationfunction.Sigmoid)
 	adam := optimizer.NewAdam(0.05)
 
-	for step := 0; step < 2000; step++ {
+	for range 2000 {
 		network.TrainStep(inputs, targets, lossfunction.MeanSquaredError, adam)
 	}
 

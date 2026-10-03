@@ -186,7 +186,7 @@ func (tokenizer *Tokenizer) nextSpecialToken(text string) (int, string) {
 }
 
 func (tokenizer *Tokenizer) hasEveryByte() bool {
-	for value := 0; value < 256; value++ {
+	for value := range 256 {
 		if _, found := tokenizer.tokenToID[string(byteToCharacter[value])]; !found {
 			return false
 		}

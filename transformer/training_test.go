@@ -65,7 +65,7 @@ func TestFrozenParametersDoNotMove(t *testing.T) {
 		before[current.Name] = append([]float64(nil), current.Values...)
 	}
 	adam := optimizer.NewAdam(0.01)
-	for step := 0; step < 3; step++ {
+	for range 3 {
 		model.TrainStep([]int{1, 2, 3, 4, 5, 6}, adam)
 	}
 	for _, current := range model.Parameters() {
@@ -116,7 +116,7 @@ func TestBatchUsesTheAverageGradient(t *testing.T) {
 }
 
 func trainSteps(model *Model, chosenOptimizer optimizer.Optimizer, tokenIDs []int, steps int) {
-	for step := 0; step < steps; step++ {
+	for range steps {
 		model.TrainBatch(RandomChunks(tokenIDs, 6, 2), chosenOptimizer)
 	}
 }
@@ -196,7 +196,7 @@ func TestFineTuningLearnsAnswersAndBecomesConfident(t *testing.T) {
 		{PromptIDs: []int{4, 5, 6}, AnswerIDs: []int{9, 10, 0}},
 	}
 	adam := optimizer.NewAdam(0.02)
-	for step := 0; step < 150; step++ {
+	for range 150 {
 		model.TrainOnExamples(examples, adam)
 	}
 	for _, example := range examples {

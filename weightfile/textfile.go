@@ -63,7 +63,7 @@ func ReadText(path string) (map[string][]float64, error) {
 		}
 
 		values := make([]float64, count)
-		for i := 0; i < count; i++ {
+		for i := range count {
 			if !scanner.Scan() {
 				return nil, fmt.Errorf("%s: parameter %q ended after %d of its %d values", path, name, i, count)
 			}

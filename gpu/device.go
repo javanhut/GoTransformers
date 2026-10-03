@@ -132,7 +132,7 @@ func openDevice(index int, forceStagingBuffers bool) (*Device, error) {
 func (device *Device) setUp() error {
 	properties := readProperties(device.physicalDevice)
 	device.maxStorageBufferRange = uint64(properties.uint32At(propertiesLimitsOffset + limitsMaxStorageBufferRangeOffset))
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		device.maxWorkGroupCount[i] = properties.uint32At(propertiesLimitsOffset + limitsMaxComputeWorkGroupCountOffset + 4*i)
 	}
 	device.nanosecondsPerTick = float64(math.Float32frombits(properties.uint32At(propertiesLimitsOffset + limitsTimestampPeriodOffset)))
@@ -399,10 +399,7 @@ func (device *Device) makeBufferBigEnough(buffer *gpuBuffer, neededSize uint64, 
 	if buffer.size >= neededSize {
 		return nil
 	}
-	newSize := neededSize
-	if buffer.size*2 > newSize {
-		newSize = buffer.size * 2
-	}
+	newSize := max(buffer.size*2, neededSize)
 	if newSize > device.maxStorageBufferRange {
 		newSize = neededSize
 	}
@@ -588,10 +585,7 @@ func (device *Device) workGroupsFor(sizes *pushConstants) (uint32, uint32, bool)
 		return groupsAcross, groupsDown, fits
 	}
 	totalGroups := sizes.columns
-	groupsAcross := totalGroups
-	if groupsAcross > device.maxWorkGroupCount[0] {
-		groupsAcross = device.maxWorkGroupCount[0]
-	}
+	groupsAcross := min(totalGroups, device.maxWorkGroupCount[0])
 	groupsDown := (totalGroups + groupsAcross - 1) / groupsAcross
 	return groupsAcross, groupsDown, groupsDown <= device.maxWorkGroupCount[1]
 }

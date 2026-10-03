@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/javanhut/GoTransformers/activationfunction"
 	"math"
+	"slices"
 )
 
 type AnswerScore struct {
@@ -62,12 +63,7 @@ type GeneratedAnswer struct {
 }
 
 func isStopToken(tokenID int, stopTokenIDs []int) bool {
-	for _, stopTokenID := range stopTokenIDs {
-		if tokenID == stopTokenID {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(stopTokenIDs, tokenID)
 }
 
 func (model *Model) Answer(promptIDs []int, options GenerationOptions) GeneratedAnswer {

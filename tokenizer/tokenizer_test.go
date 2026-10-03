@@ -72,7 +72,7 @@ func TestDigitSplitting(t *testing.T) {
 
 func trainingText() string {
 	var builder strings.Builder
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		builder.WriteString("the quick brown fox jumps over the lazy dog. the lazy dog sleeps. ")
 	}
 	builder.WriteString(strings.Join(variedTexts, " "))

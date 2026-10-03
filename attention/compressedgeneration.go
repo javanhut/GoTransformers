@@ -102,10 +102,7 @@ func (compressed *CompressedAttention) ForwardOneToken(input vectormath.Vector) 
 	for _, block := range chosen {
 		entries = append(entries, state.compressedEntries.Row(block))
 	}
-	windowStart := position - compressed.WindowSize + 1
-	if windowStart < 0 {
-		windowStart = 0
-	}
+	windowStart := max(position-compressed.WindowSize+1, 0)
 	for windowPosition := windowStart; windowPosition <= position; windowPosition++ {
 		entries = append(entries, state.windowEntries.Row(windowPosition-state.windowFirstPosition))
 	}

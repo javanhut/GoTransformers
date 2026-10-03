@@ -100,7 +100,7 @@ func NewHyperConnection(name string, vectorSize int, numberOfStreams int) *Hyper
 	if startingInputAmount > largestStartingInputAmount {
 		startingInputAmount = largestStartingInputAmount
 	}
-	for stream := 0; stream < numberOfStreams; stream++ {
+	for stream := range numberOfStreams {
 		connection.InputBiases[stream] = logit(startingInputAmount)
 		connection.ResidualBiases[stream*numberOfStreams+stream] = startingResidualDiagonal
 	}
@@ -140,8 +140,8 @@ func (connection *HyperConnection) LayerInput(streams vectormath.Matrix) vectorm
 	sinkhornRecords := make([]sinkhornRecord, numberOfTokens)
 	layerInput := vectormath.NewMatrix(numberOfTokens, connection.VectorSize)
 
-	for token := 0; token < numberOfTokens; token++ {
-		for stream := 0; stream < numberOfStreams; stream++ {
+	for token := range numberOfTokens {
+		for stream := range numberOfStreams {
 			rawInputAmount := connection.InputGate[0]*inputProjection.Get(token, stream) + connection.InputBiases[stream]
 			inputAmounts.Set(token, stream, activationfunction.Sigmoid.Forward(rawInputAmount))
 			rawOutputAmount := connection.OutputGate[0]*outputProjection.Get(token, stream) + connection.OutputBiases[stream]
@@ -156,7 +156,7 @@ func (connection *HyperConnection) LayerInput(streams vectormath.Matrix) vectorm
 
 		streamRow := streams.Row(token)
 		layerInputRow := layerInput.Row(token)
-		for stream := 0; stream < numberOfStreams; stream++ {
+		for stream := range numberOfStreams {
 			amount := inputAmounts.Get(token, stream)
 			streamValues := connection.streamPart(streamRow, stream)
 			for i := range layerInputRow {
@@ -192,9 +192,9 @@ func (connection *HyperConnection) Combine(layerOutput vectormath.Matrix) vector
 		newStreamRow := newStreams.Row(token)
 		layerOutputRow := layerOutput.Row(token)
 		mixing := connection.lastResidualMixing[token]
-		for stream := 0; stream < numberOfStreams; stream++ {
+		for stream := range numberOfStreams {
 			target := connection.streamPart(newStreamRow, stream)
-			for otherStream := 0; otherStream < numberOfStreams; otherStream++ {
+			for otherStream := range numberOfStreams {
 				weight := mixing.Get(stream, otherStream)
 				source := connection.streamPart(streamRow, otherStream)
 				for i := range target {
@@ -226,7 +226,7 @@ func (connection *HyperConnection) BackwardCombine(newStreamGradients vectormath
 	residualProjectionGradients := vectormath.NewMatrix(numberOfTokens, numberOfStreams*numberOfStreams)
 	outputProjectionGradients := vectormath.NewMatrix(numberOfTokens, numberOfStreams)
 
-	for token := 0; token < numberOfTokens; token++ {
+	for token := range numberOfTokens {
 		gradientRow := newStreamGradients.Row(token)
 		streamRow := connection.lastStreams.Row(token)
 		streamGradientRow := streamGradients.Row(token)
@@ -235,7 +235,7 @@ func (connection *HyperConnection) BackwardCombine(newStreamGradients vectormath
 		mixing := connection.lastResidualMixing[token]
 		mixingGradients := vectormath.NewMatrix(numberOfStreams, numberOfStreams)
 
-		for stream := 0; stream < numberOfStreams; stream++ {
+		for stream := range numberOfStreams {
 			targetGradient := connection.streamPart(gradientRow, stream)
 
 			amount := connection.lastOutputAmounts.Get(token, stream)
@@ -245,7 +245,7 @@ func (connection *HyperConnection) BackwardCombine(newStreamGradients vectormath
 				amountGradient += targetGradient[i] * layerOutputRow[i]
 			}
 
-			for otherStream := 0; otherStream < numberOfStreams; otherStream++ {
+			for otherStream := range numberOfStreams {
 				weight := mixing.Get(stream, otherStream)
 				source := connection.streamPart(streamRow, otherStream)
 				sourceGradient := connection.streamPart(streamGradientRow, otherStream)
@@ -293,11 +293,11 @@ func (connection *HyperConnection) BackwardLayerInput(layerInputGradients vector
 	streamGradients := vectormath.NewMatrix(numberOfTokens, connection.lastStreams.Columns)
 	inputProjectionGradients := vectormath.NewMatrix(numberOfTokens, numberOfStreams)
 
-	for token := 0; token < numberOfTokens; token++ {
+	for token := range numberOfTokens {
 		layerInputGradientRow := layerInputGradients.Row(token)
 		streamRow := connection.lastStreams.Row(token)
 		streamGradientRow := streamGradients.Row(token)
-		for stream := 0; stream < numberOfStreams; stream++ {
+		for stream := range numberOfStreams {
 			amount := connection.lastInputAmounts.Get(token, stream)
 			streamValues := connection.streamPart(streamRow, stream)
 			streamValueGradients := connection.streamPart(streamGradientRow, stream)

@@ -82,7 +82,7 @@ func NewtonSchulz(matrix vectormath.Matrix) vectormath.Matrix {
 	}
 	current = vectormath.ScaleMatrix(current, 1/size)
 
-	for step := 0; step < numberOfFastNewtonSchulzSteps+numberOfSettlingNewtonSchulzSteps; step++ {
+	for step := range numberOfFastNewtonSchulzSteps + numberOfSettlingNewtonSchulzSteps {
 		a, b, c := 3.4445, -4.7750, 2.0315
 		if step >= numberOfFastNewtonSchulzSteps {
 			a, b, c = 2, -1.5, 0.5

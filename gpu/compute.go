@@ -67,14 +67,8 @@ func Float(value float64) uint32 {
 }
 
 func GroupsFor(numberOfThreads int, threadsPerGroup int) (uint32, uint32) {
-	groups := (numberOfThreads + threadsPerGroup - 1) / threadsPerGroup
-	if groups < 1 {
-		groups = 1
-	}
-	groupsAcross := groups
-	if groupsAcross > 65535 {
-		groupsAcross = 65535
-	}
+	groups := max((numberOfThreads+threadsPerGroup-1)/threadsPerGroup, 1)
+	groupsAcross := min(groups, 65535)
 	groupsDown := (groups + groupsAcross - 1) / groupsAcross
 	return uint32(groupsAcross), uint32(groupsDown)
 }

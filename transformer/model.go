@@ -14,6 +14,7 @@ import (
 	"github.com/javanhut/GoTransformers/parameter"
 	"github.com/javanhut/GoTransformers/perceptron"
 	"github.com/javanhut/GoTransformers/vectormath"
+	"slices"
 )
 
 type Model struct {
@@ -165,8 +166,8 @@ func (model *Model) hiddenStatesBackward(gradients vectormath.Matrix) {
 	if streams > 1 {
 		gradients = hyperconnection.CollapseStreamsBackward(gradients, streams)
 	}
-	for i := len(model.Blocks) - 1; i >= 0; i-- {
-		gradients = model.Blocks[i].Backward(gradients)
+	for _, v := range slices.Backward(model.Blocks) {
+		gradients = v.Backward(gradients)
 	}
 	if streams > 1 {
 		gradients = hyperconnection.ExpandToStreamsBackward(gradients, streams)
@@ -244,9 +245,6 @@ func RandomChunk(tokenIDs []int, length int) []int {
 	if length >= len(tokenIDs) {
 		return tokenIDs
 	}
-	start := int(vectormath.RandomNumberBetween(0, float64(len(tokenIDs)-length+1)))
-	if start > len(tokenIDs)-length {
-		start = len(tokenIDs) - length
-	}
+	start := min(int(vectormath.RandomNumberBetween(0, float64(len(tokenIDs)-length+1))), len(tokenIDs)-length)
 	return tokenIDs[start : start+length]
 }

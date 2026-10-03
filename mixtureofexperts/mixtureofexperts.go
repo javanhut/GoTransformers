@@ -60,10 +60,10 @@ func buildMixtureOfExperts(name string, vectorSize int, numberOfSharedExperts in
 		RouterLayer:     perceptron.NewLayer(name+".router", vectorSize, numberOfRoutedExperts, activationfunction.Linear),
 		BalanceBiases:   vectormath.NewVector(numberOfRoutedExperts),
 	}
-	for i := 0; i < numberOfSharedExperts; i++ {
+	for i := range numberOfSharedExperts {
 		mixture.SharedExperts = append(mixture.SharedExperts, makeExpert(fmt.Sprintf("%s.shared%d", name, i+1)))
 	}
-	for i := 0; i < numberOfRoutedExperts; i++ {
+	for i := range numberOfRoutedExperts {
 		mixture.RoutedExperts = append(mixture.RoutedExperts, makeExpert(fmt.Sprintf("%s.expert%d", name, i+1)))
 	}
 	return mixture
@@ -140,7 +140,7 @@ func (mixture *MixtureOfExperts) Forward(inputs vectormath.Matrix, tokenIDs []in
 	var affinities vectormath.Matrix
 
 	if mixture.UseHashRouting {
-		for token := 0; token < numberOfTokens; token++ {
+		for token := range numberOfTokens {
 			if tokenIDs[token] < 0 {
 				panic(fmt.Sprintf("mixture of experts %q: token ID %d at row %d is negative", mixture.Name, tokenIDs[token], token))
 			}
@@ -153,7 +153,7 @@ func (mixture *MixtureOfExperts) Forward(inputs vectormath.Matrix, tokenIDs []in
 	} else {
 		routerLogits = mixture.RouterLayer.Forward(inputs)
 		affinities = vectormath.NewMatrix(numberOfTokens, mixture.NumberOfRoutedExperts())
-		for token := 0; token < numberOfTokens; token++ {
+		for token := range numberOfTokens {
 			tokenAffinities := affinities.Row(token)
 			for expert, routerLogit := range routerLogits.Row(token) {
 				tokenAffinities[expert] = affinity(routerLogit)

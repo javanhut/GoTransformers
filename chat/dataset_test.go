@@ -109,7 +109,7 @@ func TestTrainingOnConversationsTeachesConversationReplies(t *testing.T) {
 		t.Fatal(err)
 	}
 	adam := optimizer.NewAdam(0.01)
-	for step := 0; step < 150; step++ {
+	for range 150 {
 		model.TrainOnExamples(examples, adam)
 	}
 	for _, messages := range conversations {

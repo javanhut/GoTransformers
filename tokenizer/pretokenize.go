@@ -114,10 +114,7 @@ func llamaPieceLength(characters []rune, start int, longestNumber int) int {
 		return 1 + countWhile(characters, start+1, isLetter)
 	}
 	if isNumber(first) {
-		length := countWhile(characters, start, isNumber)
-		if length > longestNumber {
-			length = longestNumber
-		}
+		length := min(countWhile(characters, start, isNumber), longestNumber)
 		return length
 	}
 	afterSpace := start

@@ -10,7 +10,7 @@ func makeByteLevelTables() ([256]rune, map[rune]byte) {
 	var toCharacter [256]rune
 	toByte := map[rune]byte{}
 	nextUnusedCharacter := 256
-	for value := 0; value < 256; value++ {
+	for value := range 256 {
 		character := rune(value)
 		if !byteIsPrintedAsItself(value) {
 			character = rune(nextUnusedCharacter)

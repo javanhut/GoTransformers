@@ -1,6 +1,8 @@
 package transformer
 
 import (
+	"slices"
+
 	"github.com/javanhut/GoTransformers/attention"
 	"github.com/javanhut/GoTransformers/gradientcheck"
 	"github.com/javanhut/GoTransformers/lossfunction"
@@ -159,8 +161,8 @@ func TestBlockGradients(t *testing.T) {
 		}
 		backward := func(outputGradients vectormath.Matrix) vectormath.Matrix {
 			gradients := outputGradients
-			for i := len(model.Blocks) - 1; i >= 0; i-- {
-				gradients = model.Blocks[i].Backward(gradients)
+			for _, v := range slices.Backward(model.Blocks) {
+				gradients = v.Backward(gradients)
 			}
 			return gradients
 		}
@@ -215,7 +217,7 @@ func TestTrainingLowersTheLoss(t *testing.T) {
 		adam := optimizer.NewAdam(0.01)
 		firstLoss := model.TrainStep(tokenIDs, adam)
 		var lastLoss float64
-		for step := 0; step < 150; step++ {
+		for range 150 {
 			lastLoss = model.TrainStep(tokenIDs, adam)
 		}
 		if lastLoss > firstLoss/4 {

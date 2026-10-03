@@ -457,7 +457,7 @@ func (attention *SelfAttention) Forward(inputs vectormath.Matrix) vectormath.Mat
 			return attention.keyValuePart(attention.lastValues, position, keyValueHead)
 		}
 
-		for position := 0; position < sequenceLength; position++ {
+		for position := range sequenceLength {
 			query := attention.queryPart(queries, position, head)
 
 			var positions []int
@@ -532,7 +532,7 @@ func (attention *SelfAttention) Backward(outputGradients vectormath.Matrix) vect
 
 	for head := 0; head < attention.NumberOfHeads; head++ {
 		keyValueHead := attention.keyValueHeadFor(head)
-		for position := 0; position < sequenceLength; position++ {
+		for position := range sequenceLength {
 			looked := attention.lastLookedAt[head][position]
 			outputGradient := attention.rotateOutput(attention.queryPart(combinedGradients, position, head), position, rotateForward)
 

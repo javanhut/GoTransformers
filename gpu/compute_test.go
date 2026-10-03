@@ -53,7 +53,7 @@ func TestRecorderRunsManyDispatchesInOneSubmit(t *testing.T) {
 		}
 		recorder.Fill(result, 0.5)
 		groupsAcross, groupsDown := GroupsFor(count, 256)
-		for repeat := 0; repeat < 3; repeat++ {
+		for range 3 {
 			recorder.Run(program, groupsAcross, groupsDown, 1, []uint32{uint32(count), Float(2)}, first, second, result)
 		}
 		downloaded := make([]float64, count)
@@ -115,7 +115,7 @@ func TestManyDispatchesUseMoreThanOneDescriptorPool(t *testing.T) {
 	recorder.Begin()
 	recorder.Fill(second, 0)
 	recorder.Fill(result, 0)
-	for repeat := 0; repeat < 2500; repeat++ {
+	for range 2500 {
 		recorder.Run(program, 1, 1, 1, []uint32{4, Float(0)}, first, second, result)
 	}
 	if err := recorder.Submit(); err != nil {
@@ -178,7 +178,7 @@ func TestRecorderMeasuresDispatchTimes(t *testing.T) {
 		t.Fatal(err)
 	}
 	recorder.Begin()
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		recorder.Run(program, 4, 1, 1, []uint32{1000, Float(1)}, values, values, values)
 	}
 	if err := recorder.Submit(); err != nil {

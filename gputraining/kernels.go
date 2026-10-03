@@ -262,8 +262,8 @@ func makeRotaryTables(device *gpu.Device, setup *rotarySetup, longestSequence in
 	pairsPerHead := setup.rotaryDimensions / 2
 	cosines := make([]float64, longestSequence*pairsPerHead)
 	sines := make([]float64, longestSequence*pairsPerHead)
-	for position := 0; position < longestSequence; position++ {
-		for pair := 0; pair < pairsPerHead; pair++ {
+	for position := range longestSequence {
+		for pair := range pairsPerHead {
 			frequency := math.Pow(setup.base, -float64(2*pair)/float64(setup.rotaryDimensions))
 			angle := float64(position) * frequency
 			cosines[position*pairsPerHead+pair] = math.Cos(angle)

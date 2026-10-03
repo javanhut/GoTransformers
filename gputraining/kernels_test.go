@@ -97,9 +97,9 @@ func TestMatrixMultiplyShapes(t *testing.T) {
 	first := randomValues(rows*inner, -1, 1)
 	second := randomValues(inner*columns, -1, 1)
 	want := make([]float64, rows*columns)
-	for row := 0; row < rows; row++ {
-		for column := 0; column < columns; column++ {
-			for step := 0; step < inner; step++ {
+	for row := range rows {
+		for column := range columns {
+			for step := range inner {
 				want[row*columns+column] += first[row*inner+step] * second[step*columns+column]
 			}
 		}
@@ -115,11 +115,11 @@ func TestMatrixMultiplyShapes(t *testing.T) {
 
 	transposedSecond := make([]float64, columns*inner)
 	transposedFirst := make([]float64, inner*rows)
-	for step := 0; step < inner; step++ {
-		for column := 0; column < columns; column++ {
+	for step := range inner {
+		for column := range columns {
 			transposedSecond[column*inner+step] = second[step*columns+column]
 		}
-		for row := 0; row < rows; row++ {
+		for row := range rows {
 			transposedFirst[step*rows+row] = first[row*inner+step]
 		}
 	}
@@ -146,12 +146,12 @@ func TestBatchedHeadMultiplyWithGroupedKeys(t *testing.T) {
 	queries := randomValues(sequences*length*heads*headSize, -1, 1)
 	keys := randomValues(sequences*length*keyValueHeads*headSize, -1, 1)
 	want := make([]float64, sequences*heads*length*length)
-	for sequence := 0; sequence < sequences; sequence++ {
-		for head := 0; head < heads; head++ {
-			for query := 0; query < length; query++ {
-				for key := 0; key < length; key++ {
+	for sequence := range sequences {
+		for head := range heads {
+			for query := range length {
+				for key := range length {
 					sum := 0.0
-					for dimension := 0; dimension < headSize; dimension++ {
+					for dimension := range headSize {
 						queryValue := queries[(sequence*length+query)*heads*headSize+head*headSize+dimension]
 						keyValue := keys[(sequence*length+key)*keyValueHeads*headSize+(head/group)*headSize+dimension]
 						sum += queryValue * keyValue
@@ -184,8 +184,8 @@ func TestAddBiasAndColumnSums(t *testing.T) {
 	wantSums := randomValues(columns, -1, 1)
 	startingSums := append([]float64(nil), wantSums...)
 	wantAdded := make([]float64, len(matrix))
-	for row := 0; row < rows; row++ {
-		for column := 0; column < columns; column++ {
+	for row := range rows {
+		for column := range columns {
 			index := row*columns + column
 			wantBiased[index] = matrix[index] + biases[column]
 			wantSums[column] += matrix[index]
@@ -244,11 +244,11 @@ func TestNormalizeMatchesRMSNorm(t *testing.T) {
 func referenceRotate(values []float64, rows int, sequenceLength int, setup rotarySetup, direction float64) []float64 {
 	rotated := append([]float64(nil), values...)
 	half := setup.rotaryDimensions / 2
-	for row := 0; row < rows; row++ {
+	for row := range rows {
 		position := row % sequenceLength
 		for head := 0; head < setup.numberOfHeads; head++ {
 			firstRotated := row*setup.numberOfHeads*setup.headSize + head*setup.headSize + setup.headSize - setup.rotaryDimensions
-			for pair := 0; pair < half; pair++ {
+			for pair := range half {
 				frequency := math.Pow(setup.base, -float64(2*pair)/float64(setup.rotaryDimensions))
 				angle := float64(position) * frequency * direction
 				firstIndex := firstRotated + 2*pair
@@ -295,7 +295,7 @@ func TestCausalSoftmaxAndBackward(t *testing.T) {
 	gradients := randomValues(rows*length, -1, 1)
 	wantProbabilities := make([]float64, len(scores))
 	wantScoreGradients := make([]float64, len(scores))
-	for row := 0; row < rows; row++ {
+	for row := range rows {
 		query := row % length
 		visible := scores[row*length : row*length+query+1]
 		probabilities := activationfunction.Softmax(visible)
@@ -360,7 +360,7 @@ func TestCrossEntropyRows(t *testing.T) {
 	weights := []float64{0.25, 0, 0.25, 0.5, 0, 1}
 	wantGradients := make([]float64, len(scores))
 	wantLosses := make([]float64, rows)
-	for row := 0; row < rows; row++ {
+	for row := range rows {
 		probabilities := activationfunction.Softmax(scores[row*vocabularySize : (row+1)*vocabularySize])
 		for column, probability := range probabilities {
 			gradient := probability
@@ -426,9 +426,9 @@ func TestSumHeadGroups(t *testing.T) {
 	rows, keyValueHeads, groupSize, headSize := 5, 2, 3, 4
 	perQueryHead := randomValues(rows*keyValueHeads*groupSize*headSize, -1, 1)
 	want := make([]float64, rows*keyValueHeads*headSize)
-	for row := 0; row < rows; row++ {
+	for row := range rows {
 		for queryHead := 0; queryHead < keyValueHeads*groupSize; queryHead++ {
-			for dimension := 0; dimension < headSize; dimension++ {
+			for dimension := range headSize {
 				want[row*keyValueHeads*headSize+(queryHead/groupSize)*headSize+dimension] += perQueryHead[row*keyValueHeads*groupSize*headSize+queryHead*headSize+dimension]
 			}
 		}

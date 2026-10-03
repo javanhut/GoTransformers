@@ -15,7 +15,7 @@ func timeMultiply(backend vectormath.Backend, first vectormath.Matrix, second ve
 	backend.MatrixTimesMatrix(first, second)
 	repeats := 5
 	start := time.Now()
-	for i := 0; i < repeats; i++ {
+	for range repeats {
 		backend.MatrixTimesMatrix(first, second)
 	}
 	return time.Since(start) / time.Duration(repeats)
@@ -27,7 +27,7 @@ func timeGeneration(backend vectormath.Backend, weights vectormath.Matrix, repea
 	oneToken := vectormath.NewRandomMatrix(1, weights.Columns, -1, 1)
 	vectormath.MatrixTimesTransposedWeights(oneToken, weights)
 	start := time.Now()
-	for i := 0; i < repeats; i++ {
+	for range repeats {
 		vectormath.MatrixTimesTransposedWeights(oneToken, weights)
 	}
 	return time.Since(start)
@@ -45,7 +45,7 @@ func timeTrainingSteps(backend vectormath.Backend, layer *perceptron.Layer, inpu
 	}
 	trainOneStep()
 	start := time.Now()
-	for step := 0; step < steps; step++ {
+	for range steps {
 		trainOneStep()
 	}
 	return time.Since(start) / time.Duration(steps)

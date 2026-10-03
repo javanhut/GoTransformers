@@ -133,7 +133,7 @@ func (embedding *Embedding) Parameters() []parameter.Parameter {
 
 func PositionalEncoding(sequenceLength int, vectorSize int) vectormath.Matrix {
 	encoding := vectormath.NewMatrix(sequenceLength, vectorSize)
-	for position := 0; position < sequenceLength; position++ {
+	for position := range sequenceLength {
 		encoding.SetRow(position, PositionalEncodingAt(position, vectorSize))
 	}
 	return encoding
@@ -141,7 +141,7 @@ func PositionalEncoding(sequenceLength int, vectorSize int) vectormath.Matrix {
 
 func PositionalEncodingAt(position int, vectorSize int) vectormath.Vector {
 	encoding := vectormath.NewVector(vectorSize)
-	for i := 0; i < vectorSize; i++ {
+	for i := range vectorSize {
 		pairNumber := i / 2
 		frequency := 1 / math.Pow(10000, float64(2*pairNumber)/float64(vectorSize))
 		angle := float64(position) * frequency

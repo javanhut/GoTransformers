@@ -80,10 +80,7 @@ func (rows *Rows) Append(values vectormath.Vector) {
 
 func valuesInBlock(values vectormath.Vector, block int) vectormath.Vector {
 	start := block * ValuesPerScale
-	end := start + ValuesPerScale
-	if end > len(values) {
-		end = len(values)
-	}
+	end := min(start+ValuesPerScale, len(values))
 	return values[start:end]
 }
 
@@ -227,12 +224,9 @@ func (rows *Rows) DotRow(row int, vector vectormath.Vector) float64 {
 		}
 	case Int8:
 		values := rows.int8Values[rowStart : rowStart+rows.Width]
-		for block := 0; block < blocksPerRow; block++ {
+		for block := range blocksPerRow {
 			start := block * ValuesPerScale
-			end := start + ValuesPerScale
-			if end > rows.Width {
-				end = rows.Width
-			}
+			end := min(start+ValuesPerScale, rows.Width)
 			blockSum := 0.0
 			for i := start; i < end; i++ {
 				blockSum += vector[i] * float64(values[i])
@@ -241,12 +235,9 @@ func (rows *Rows) DotRow(row int, vector vectormath.Vector) float64 {
 		}
 	case FP4:
 		packedRow := rows.fp4Values[row*rows.bytesPerRowForFP4() : (row+1)*rows.bytesPerRowForFP4()]
-		for block := 0; block < blocksPerRow; block++ {
+		for block := range blocksPerRow {
 			start := block * ValuesPerScale
-			end := start + ValuesPerScale
-			if end > rows.Width {
-				end = rows.Width
-			}
+			end := min(start+ValuesPerScale, rows.Width)
 			blockSum := 0.0
 			for i := start; i < end; i++ {
 				packed := packedRow[i/2]

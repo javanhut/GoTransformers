@@ -16,7 +16,7 @@ func TestMuonLearnsXOR(t *testing.T) {
 	network := perceptron.NewMultiLayerPerceptron([]int{2, 8, 1}, activationfunction.Tanh, activationfunction.Sigmoid)
 	muon := optimizer.NewMuon(0.05)
 
-	for step := 0; step < 2000; step++ {
+	for range 2000 {
 		network.TrainStep(inputs, targets, lossfunction.MeanSquaredError, muon)
 	}
 

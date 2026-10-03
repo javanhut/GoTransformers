@@ -123,14 +123,12 @@ func TestConcurrentUse(t *testing.T) {
 	second := vectormath.NewRandomMatrix(70, 90, -1, 1)
 	want := vectormath.CPUBackend{}.MatrixTimesMatrix(first, second)
 	var waitGroup sync.WaitGroup
-	for worker := 0; worker < 8; worker++ {
-		waitGroup.Add(1)
-		go func() {
-			defer waitGroup.Done()
-			for repeat := 0; repeat < 5; repeat++ {
+	for range 8 {
+		waitGroup.Go(func() {
+			for range 5 {
 				checkClose(t, "concurrent", device.MatrixTimesMatrix(first, second), want, 70)
 			}
-		}()
+		})
 	}
 	waitGroup.Wait()
 }
