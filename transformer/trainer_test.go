@@ -10,7 +10,7 @@ import (
 
 func tiedSettings() Settings {
 	settings := tinySettings()
-	settings.TieOutputToEmbedding = true
+	settings.TieEmbeddings = true
 	return settings
 }
 

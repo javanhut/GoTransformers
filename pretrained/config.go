@@ -107,6 +107,6 @@ func (config LlamaConfig) Settings() transformer.Settings {
 		GroupSharingMode:        attention.BorrowKeysAndValues,
 		CachePrecision:          lowprecision.Float64,
 		NumberOfResidualStreams: 1,
-		TieOutputToEmbedding:    config.TieWordEmbeddings,
+		TieEmbeddings:           config.TieWordEmbeddings,
 	}
 }

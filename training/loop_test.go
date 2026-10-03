@@ -14,7 +14,7 @@ func newTinyTrainer(t *testing.T) *transformer.Trainer {
 	settings.NumberOfHeads = 2
 	settings.FeedForwardSize = 32
 	settings.NumberOfBlocks = 2
-	settings.TieOutputToEmbedding = true
+	settings.TieEmbeddings = true
 	model, err := transformer.NewModel(settings)
 	if err != nil {
 		t.Fatal(err)

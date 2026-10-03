@@ -46,7 +46,7 @@ func (model *Model) DecompressWeights() {
 		model.TokenEmbedding.Table = table
 		model.TokenEmbedding.CompressedTable = nil
 	}
-	if model.Settings.TieOutputToEmbedding {
+	if model.Settings.TieEmbeddings {
 		model.tieOutputToEmbedding()
 	}
 }
@@ -78,7 +78,7 @@ func (model *Model) WeightBytes() int {
 }
 
 func (model *Model) outputSharesTheEmbeddingTable() bool {
-	if !model.Settings.TieOutputToEmbedding {
+	if !model.Settings.TieEmbeddings {
 		return false
 	}
 	outputLayer := model.OutputLayer
@@ -109,11 +109,6 @@ func (model *Model) weightSetters() map[string]func(values []float64) error {
 		setters[layer.Name+".biases"] = layer.SetBiases
 	}
 	setters[model.TokenEmbedding.Name+".table"] = model.TokenEmbedding.SetTable
-	if model.Settings.TieEmbeddings {
-		// The output weight is the embedding table (set via ".table"); it is not
-		// saved separately, so don't expect or require an "output.weights" entry.
-		delete(setters, model.OutputLayer.Name+".weights")
-	}
 	for _, current := range model.Parameters() {
 		if _, alreadySet := setters[current.Name]; alreadySet {
 			continue
@@ -131,7 +126,7 @@ func (model *Model) weightSetters() map[string]func(values []float64) error {
 }
 
 func (model *Model) isTiedOutputLayer(layer *perceptron.Layer) bool {
-	return layer == model.OutputLayer && model.Settings.TieOutputToEmbedding
+	return layer == model.OutputLayer && model.Settings.TieEmbeddings
 }
 
 func (model *Model) compressedWeightSetters() map[string]func(rows *lowprecision.Rows) error {
@@ -184,7 +179,7 @@ func (model *Model) SetWeightsAndCompressedWeights(savedValues map[string][]floa
 }
 
 func (model *Model) tieOutputAfterLoading(outputWasSavedCompressed bool) error {
-	if !model.Settings.TieOutputToEmbedding || outputWasSavedCompressed {
+	if !model.Settings.TieEmbeddings || outputWasSavedCompressed {
 		return nil
 	}
 	if model.TokenEmbedding.IsCompressed() {
@@ -199,7 +194,7 @@ func (model *Model) tieOutputAfterLoading(outputWasSavedCompressed bool) error {
 
 func (model *Model) parametersToSave() []parameter.Parameter {
 	parameters := model.Parameters()
-	if model.Settings.TieOutputToEmbedding && model.OutputLayer.IsCompressed() && !model.outputSharesTheEmbeddingTable() {
+	if model.Settings.TieEmbeddings && model.OutputLayer.IsCompressed() && !model.outputSharesTheEmbeddingTable() {
 		outputLayer := model.OutputLayer
 		outputWeights := parameter.Parameter{Name: outputLayer.Name + ".weights", CompressedValues: outputLayer.CompressedWeights, Rows: outputLayer.Weights.Rows, Columns: outputLayer.Weights.Columns, ReadOnly: true}
 		parameters = append(parameters, outputWeights)

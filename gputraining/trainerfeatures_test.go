@@ -12,10 +12,10 @@ import (
 func TestTiedClippedScheduledStepsMatchCPU(t *testing.T) {
 	device := openTestDevice(t)
 	tied := smallTestSettings()
-	tied.TieOutputToEmbedding = true
+	tied.TieEmbeddings = true
 	sineWaves := smallTestSettings()
 	sineWaves.UseRotaryPositions = false
-	sineWaves.TieOutputToEmbedding = true
+	sineWaves.TieEmbeddings = true
 	for name, settings := range map[string]transformer.Settings{"tied": tied, "tied with sine-wave positions": sineWaves, "untied": smallTestSettings()} {
 		t.Run(name, func(t *testing.T) {
 			cpuModel, gpuModel := twinModels(t, settings)
@@ -68,7 +68,7 @@ func TestTiedClippedScheduledStepsMatchCPU(t *testing.T) {
 func TestEvaluationLossMatchesCPUAndChangesNothing(t *testing.T) {
 	device := openTestDevice(t)
 	settings := smallTestSettings()
-	settings.TieOutputToEmbedding = true
+	settings.TieEmbeddings = true
 	settings.ResidualDropout = 0.2
 	settings.AttentionDropout = 0.2
 	cpuModel, gpuModel := twinModels(t, settings)
@@ -133,7 +133,7 @@ func TestDropoutTrainingIsRandomButStillLearns(t *testing.T) {
 func TestFrozenTokenTableDoesNotMove(t *testing.T) {
 	device := openTestDevice(t)
 	settings := smallTestSettings()
-	settings.TieOutputToEmbedding = true
+	settings.TieEmbeddings = true
 	vectormath.SetRandomSeed(8)
 	model, err := transformer.NewModel(settings)
 	if err != nil {
@@ -162,7 +162,7 @@ func TestFrozenTokenTableDoesNotMove(t *testing.T) {
 func TestSaveModelWritesTheTrainedWeights(t *testing.T) {
 	device := openTestDevice(t)
 	settings := smallTestSettings()
-	settings.TieOutputToEmbedding = true
+	settings.TieEmbeddings = true
 	vectormath.SetRandomSeed(9)
 	model, err := transformer.NewModel(settings)
 	if err != nil {

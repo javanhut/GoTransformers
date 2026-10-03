@@ -65,8 +65,6 @@ type Settings struct {
 	MultiTokenPrediction bool
 	MultiTokenLossWeight float64
 
-	TieOutputToEmbedding bool
-
 	AdapterRank  int
 	AdapterAlpha float64
 
@@ -76,8 +74,8 @@ type Settings struct {
 
 	// TieEmbeddings shares one weight matrix between the token embedding and the
 	// output projection (weight tying). It roughly halves the parameters a small
-	// model spends on its vocabulary and usually improves quality. Only valid at
-	// full precision (tied weights can't be compressed).
+	// model spends on its vocabulary and usually improves quality. Works with
+	// compressed weights too.
 	TieEmbeddings bool
 }
 
@@ -236,9 +234,6 @@ func (settings Settings) Check() error {
 	}
 	if settings.MultiTokenLossWeight < 0 {
 		return fmt.Errorf("MultiTokenLossWeight can't be negative, got %v", settings.MultiTokenLossWeight)
-	}
-	if settings.TieEmbeddings && settings.WeightPrecision != lowprecision.Float64 {
-		return fmt.Errorf("TieEmbeddings needs full-precision weights (tied weights can't be compressed)")
 	}
 	return nil
 }

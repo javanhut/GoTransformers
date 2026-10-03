@@ -167,7 +167,6 @@ type Trainer struct {
 	shared            sharedBuffers
 	allocated         []*gpu.Buffer
 	closed            bool
-	tied              bool
 }
 
 func unsupportedFeatures(model *transformer.Model) []string {
@@ -242,20 +241,6 @@ func NewTrainer(device *gpu.Device, model *transformer.Model, options TrainerOpt
 		useRotary:        firstAttention.UseRotaryPositions,
 		residualDropout:  settings.ResidualDropout,
 		attentionDropout: settings.AttentionDropout,
-		Options:         options,
-		device:          device,
-		model:           model,
-		kernels:         loaded,
-		recorder:        recorder,
-		vectorSize:      settings.VectorSize,
-		numberOfHeads:   firstAttention.NumberOfHeads,
-		keyValueHeads:   firstAttention.NumberOfKeyValueHeads,
-		headSize:        firstAttention.HeadSize(),
-		feedForwardSize: model.Blocks[0].FeedForward.Layers()[0].NumberOfOutputs(),
-		vocabularySize:  settings.VocabularySize,
-		clampLimit:      settings.FeedForwardClampLimit,
-		useRotary:       firstAttention.UseRotaryPositions,
-		tied:            settings.TieEmbeddings,
 	}
 	if trainer.useRotary {
 		rotaryDimensions := firstAttention.RotaryDimensions
@@ -335,7 +320,7 @@ func (trainer *Trainer) newLayerTiedToTokenTable(layer *perceptron.Layer) (layer
 }
 
 func (trainer *Trainer) isTied() bool {
-	return trainer.model.Settings.TieOutputToEmbedding
+	return trainer.model.Settings.TieEmbeddings
 }
 
 func (trainer *Trainer) uploadModel() error {
@@ -1070,120 +1055,6 @@ func (trainer *Trainer) recordOptimizerStep() []float64 {
 
 func (trainer *Trainer) LastGradientNorm() float64 {
 	return trainer.lastGradientNorm
-		learningRate:                     trainer.Options.LearningRate,
-		momentumDecay:                    trainer.Options.MomentumDecay,
-		squaredGradientDecay:             trainer.Options.SquaredGradientDecay,
-		epsilon:                          trainer.Options.Epsilon,
-		averageGradientCorrection:        1 - math.Pow(trainer.Options.MomentumDecay, float64(trainer.stepsTaken)),
-		averageSquaredGradientCorrection: 1 - math.Pow(trainer.Options.SquaredGradientDecay, float64(trainer.stepsTaken)),
-	}
-	for _, current := range trainer.parameters {
-		if trainer.isFrozen(current.name) {
-			continue
-		}
-		// When embeddings are tied, the output weight matrix is the token
-		// embedding; its update is the sum of the output-projection gradient
-		// (here, on the GPU) and the input-lookup gradient (scattered on the CPU),
-		// so it is applied once on the CPU in updateTiedWeight instead.
-		if trainer.tied && current == trainer.outputLayer.weights {
-			continue
-		}
-		shrinkFactor := 1.0
-		if current.isMatrix {
-			shrinkFactor = 1 - trainer.Options.LearningRate*trainer.Options.WeightDecay
-		}
-		loaded.adamWUpdate(recorder, current.values, current.gradients, current.averageGradients, current.averageSquaredGradients, len(current.cpuValues), step, shrinkFactor)
-	}
-
-	embeddingGradients := make([]float64, rows*vectorSize)
-	rowLosses := make([]float64, rows)
-	recorder.Download(outputGradients, embeddingGradients)
-	recorder.Download(shared.rowLosses, rowLosses)
-	var outputWeightGradient []float64
-	if trainer.tied {
-		outputWeightGradient = make([]float64, len(trainer.outputLayer.weights.cpuValues))
-		recorder.Download(trainer.outputLayer.weights.gradients, outputWeightGradient)
-	}
-	if err := recorder.Submit(); err != nil {
-		return 0, err
-	}
-
-	if trainer.tied {
-		trainer.updateTiedWeight(batch, embeddingGradients, outputWeightGradient)
-	} else {
-		trainer.updateEmbedding(batch, embeddingGradients)
-	}
-	loss := 0.0
-	for _, rowLoss := range rowLosses {
-		loss += rowLoss
-	}
-	return loss, nil
-}
-
-func (trainer *Trainer) updateEmbedding(batch preparedBatch, embeddingGradients []float64) {
-	tokenEmbedding := trainer.model.TokenEmbedding
-	embeddingParameters := tokenEmbedding.Parameters()
-	trainer.embeddingOptimizer.LearningRate = trainer.Options.LearningRate
-	trainer.embeddingOptimizer.WeightDecay = trainer.Options.WeightDecay
-	trainer.embeddingOptimizer.MomentumDecay = trainer.Options.MomentumDecay
-	trainer.embeddingOptimizer.SquaredGradientDecay = trainer.Options.SquaredGradientDecay
-	trainer.embeddingOptimizer.Epsilon = trainer.Options.Epsilon
-	if trainer.isFrozen(embeddingParameters[0].Name) {
-		trainer.embeddingOptimizer.Update(nil)
-		return
-	}
-	parameter.ZeroGradients(embeddingParameters)
-	vectorSize := trainer.vectorSize
-	for sequence, inputIDs := range batch.inputIDs {
-		firstRow := sequence * batch.sequenceLength
-		gradients := vectormath.Matrix{Rows: len(inputIDs), Columns: vectorSize, Values: embeddingGradients[firstRow*vectorSize : (firstRow+len(inputIDs))*vectorSize]}
-		tokenEmbedding.AddGradients(inputIDs, gradients)
-	}
-	trainer.embeddingOptimizer.Update(embeddingParameters)
-}
-
-// updateTiedWeight applies the single update for a tied embedding/output matrix.
-// The matrix lives on the GPU as the output-layer weights; its gradient is the
-// GPU output-projection gradient plus the CPU-scattered input-lookup gradient.
-// It sums them into the shared TableGradients (so inspectors see the full
-// gradient), applies one AdamW step on the CPU, and uploads the result back to
-// the GPU so the next forward pass uses the updated weights.
-func (trainer *Trainer) updateTiedWeight(batch preparedBatch, embeddingGradients []float64, outputWeightGradient []float64) {
-	tokenEmbedding := trainer.model.TokenEmbedding
-	embeddingParameters := tokenEmbedding.Parameters()
-	trainer.embeddingOptimizer.LearningRate = trainer.Options.LearningRate
-	trainer.embeddingOptimizer.WeightDecay = trainer.Options.WeightDecay
-	trainer.embeddingOptimizer.MomentumDecay = trainer.Options.MomentumDecay
-	trainer.embeddingOptimizer.SquaredGradientDecay = trainer.Options.SquaredGradientDecay
-	trainer.embeddingOptimizer.Epsilon = trainer.Options.Epsilon
-
-	// Start from the dense output-projection gradient, then scatter-add the
-	// input-lookup gradient on top, into the shared gradient buffer.
-	if len(tokenEmbedding.TableGradients) != len(outputWeightGradient) {
-		tokenEmbedding.TableGradients = make([]float64, len(outputWeightGradient))
-	}
-	copy(tokenEmbedding.TableGradients, outputWeightGradient)
-	vectorSize := trainer.vectorSize
-	for sequence, inputIDs := range batch.inputIDs {
-		firstRow := sequence * batch.sequenceLength
-		for row, tokenID := range inputIDs {
-			source := embeddingGradients[(firstRow+row)*vectorSize : (firstRow+row+1)*vectorSize]
-			destination := tokenEmbedding.TableGradients[tokenID*vectorSize : (tokenID+1)*vectorSize]
-			for i := range destination {
-				destination[i] += source[i]
-			}
-		}
-	}
-
-	if trainer.isFrozen(embeddingParameters[0].Name) {
-		trainer.embeddingOptimizer.Update(nil)
-		return
-	}
-	trainer.embeddingOptimizer.Update(embeddingParameters)
-	// Push the updated shared matrix back to the GPU (it is the output weights).
-	if err := trainer.outputLayer.weights.values.Upload(trainer.outputLayer.weights.cpuValues); err != nil {
-		panic(fmt.Sprintf("gputraining: uploading tied weights: %v", err))
-	}
 }
 
 func (trainer *Trainer) StepsTaken() int {

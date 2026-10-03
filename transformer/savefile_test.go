@@ -213,7 +213,7 @@ func TestCompressedModelWithAdaptersResumesFromCheckpoint(t *testing.T) {
 
 func TestTiedModelSavesAndLoadsCompressedOrNot(t *testing.T) {
 	settings := tinySettings()
-	settings.TieOutputToEmbedding = true
+	settings.TieEmbeddings = true
 	model := newModel(t, settings)
 	loaded, path := saveAndLoad(t, model, weightfile.Float64)
 	sameGeneration(t, "tied", model, loaded)

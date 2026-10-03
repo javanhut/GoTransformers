@@ -29,7 +29,7 @@ func openTwoDevices(t *testing.T) []*gpu.Device {
 func TestDataParallelMatchesOneGPU(t *testing.T) {
 	devices := openTwoDevices(t)
 	settings := smallTestSettings()
-	settings.TieOutputToEmbedding = true
+	settings.TieEmbeddings = true
 	singleModel, parallelModel := twinModels(t, settings)
 	options := DefaultTrainerOptions(testLearningRate, testWeightDecay)
 	options.MaximumGradientNorm = 0.5

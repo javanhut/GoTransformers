@@ -375,7 +375,7 @@ You rarely call these yourself: `transformer.Trainer` and `gputraining.Trainer` 
 | `NormalizeQueriesAndKeys`, `UseAttentionSink` | false, false | |
 | `UseRotaryPositions`, `RotaryDimensions`, `RotaryBase`, `RotateHalves` | true, 0, 0, false | |
 | `NormEpsilon` | 0 (1e-6) | for every RMSNorm |
-| `TieOutputToEmbedding` | false | the output layer reads the token embedding table instead of having its own weights (weight tying); saves `VocabularySize × VectorSize` parameters |
+| `TieEmbeddings` | false | the output layer reads the token embedding table instead of having its own weights (weight tying); saves `VocabularySize × VectorSize` parameters |
 | `WindowSize`, `FullAttentionEvery`, `TopK` | 0, 0, 0 | standard blocks; every `FullAttentionEvery`-th block ignores the window |
 | `BlocksPerKeyValueGroup`, `GroupSharingMode` | 1, `BorrowKeysAndValues` | groups of standard blocks sharing one cache |
 | `CompressionRate`, `HeavyCompressionRate` | 4, 16 | CSA and HCA |
@@ -652,7 +652,7 @@ Reads F64, F32, F16 and BF16.
 | `LoadTokenizer(folder)` | `tokenizer.json` if the folder has one, otherwise `tokenizer.model` |
 | `SaveModelAndTokenizer(path, model, tokenizer, storagePrecision)`, `LoadModelAndTokenizer(path)` | convert a downloaded model once (for example to Int8) and load it quickly afterwards |
 
-Supports `model_type` `llama`, `mistral` and `qwen2`, single or sharded safetensors, and tied embeddings (loaded with `TieOutputToEmbedding`, so the table is kept once). Mistral's `sliding_window` is ignored, which matches Mistral v0.1 up to 4096 tokens. RoPE scaling, a separate `head_dim`, MLP biases and sliding-window configs are refused with a clear error.
+Supports `model_type` `llama`, `mistral` and `qwen2`, single or sharded safetensors, and tied embeddings (loaded with `TieEmbeddings`, so the table is kept once). Mistral's `sliding_window` is ignored, which matches Mistral v0.1 up to 4096 tokens. RoPE scaling, a separate `head_dim`, MLP biases and sliding-window configs are refused with a clear error.
 
 ---
 
