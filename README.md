@@ -149,6 +149,7 @@ for step := 0; step < 5000; step++ {
 }
 trainer.CopyWeightsToModel()
 model.Save("story-model.weights")
+textTokenizer.SaveToFile("story-model.weights.tokenizer")
 ```
 
 Turn on the DeepSeek-V4 style architecture:

@@ -20,6 +20,7 @@ type textCoder struct {
 	vocabularySize int
 	encode         func(text string) []int
 	decode         func(ids []int) string
+	save           func(modelPath string) (string, error)
 }
 
 func characterCoder(text string) textCoder {
@@ -31,6 +32,10 @@ func characterCoder(text string) textCoder {
 		},
 		decode: func(ids []int) string {
 			return strings.Join(vocabulary.Decode(ids), "")
+		},
+		save: func(modelPath string) (string, error) {
+			path := modelPath + ".vocabulary.txt"
+			return path, vocabulary.SaveToFile(path)
 		},
 	}
 }
@@ -71,7 +76,15 @@ func main() {
 	case "bpe":
 		fmt.Printf("learning a %d token BPE vocabulary...\n", *bpeVocabularySize)
 		textTokenizer := tokenizer.Train(text, *bpeVocabularySize)
-		coder = textCoder{vocabularySize: textTokenizer.VocabularySize(), encode: textTokenizer.Encode, decode: textTokenizer.Decode}
+		coder = textCoder{
+			vocabularySize: textTokenizer.VocabularySize(),
+			encode:         textTokenizer.Encode,
+			decode:         textTokenizer.Decode,
+			save: func(modelPath string) (string, error) {
+				path := modelPath + ".tokenizer"
+				return path, textTokenizer.SaveToFile(path)
+			},
+		}
 	default:
 		fmt.Println("-tokens must be characters or bpe")
 		os.Exit(1)
@@ -149,6 +162,11 @@ func main() {
 			fmt.Println("could not save the model:", err)
 			os.Exit(1)
 		}
-		fmt.Println("saved the model to", *savePath)
+		tokensPath, err := coder.save(*savePath)
+		if err != nil {
+			fmt.Println("could not save the tokens:", err)
+			os.Exit(1)
+		}
+		fmt.Println("saved the model to", *savePath, "and its tokens to", tokensPath)
 	}
 }
