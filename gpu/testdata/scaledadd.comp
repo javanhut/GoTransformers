@@ -1,0 +1,28 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer FirstBuffer {
+    float firstValues[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer SecondBuffer {
+    float secondValues[];
+};
+
+layout(std430, set = 0, binding = 2) buffer ResultBuffer {
+    float resultValues[];
+};
+
+layout(push_constant) uniform Settings {
+    uint count;
+    float scale;
+} settings;
+
+void main() {
+    uint index = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 256u + gl_LocalInvocationID.x;
+    if (index >= settings.count) {
+        return;
+    }
+    resultValues[index] += firstValues[index] + settings.scale * secondValues[index];
+}

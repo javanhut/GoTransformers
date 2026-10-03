@@ -1,0 +1,52 @@
+#version 450
+
+layout(local_size_x = 32, local_size_y = 8) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer ProbabilityBuffer {
+    float probabilities[];
+};
+
+layout(std430, set = 0, binding = 1) buffer GradientBuffer {
+    float gradients[];
+};
+
+layout(push_constant) uniform Settings {
+    uint rows;
+    uint sequenceLength;
+} settings;
+
+const uint threadsPerRow = 32;
+const uint rowsPerGroup = 8;
+
+shared float partials[rowsPerGroup][threadsPerRow];
+
+void main() {
+    uint rowInGroup = gl_LocalInvocationID.y;
+    uint thread = gl_LocalInvocationID.x;
+    uint row = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * rowsPerGroup + rowInGroup;
+    bool rowExists = row < settings.rows;
+    uint rowStart = row * settings.sequenceLength;
+
+    float sum = 0.0;
+    if (rowExists) {
+        for (uint key = thread; key < settings.sequenceLength; key += threadsPerRow) {
+            sum += gradients[rowStart + key] * probabilities[rowStart + key];
+        }
+    }
+    partials[rowInGroup][thread] = sum;
+    barrier();
+    for (uint distance = threadsPerRow / 2u; distance > 0u; distance /= 2u) {
+        if (thread < distance) {
+            partials[rowInGroup][thread] += partials[rowInGroup][thread + distance];
+        }
+        barrier();
+    }
+    float weightedSum = partials[rowInGroup][0];
+
+    if (!rowExists) {
+        return;
+    }
+    for (uint key = thread; key < settings.sequenceLength; key += threadsPerRow) {
+        gradients[rowStart + key] = probabilities[rowStart + key] * (gradients[rowStart + key] - weightedSum);
+    }
+}

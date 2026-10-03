@@ -1,0 +1,66 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer InputBuffer {
+    float inputValues[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer WeightBuffer {
+    float weights[];
+};
+
+layout(std430, set = 0, binding = 2) readonly buffer RootMeanSquareBuffer {
+    float rootMeanSquares[];
+};
+
+layout(std430, set = 0, binding = 3) readonly buffer OutputGradientBuffer {
+    float outputGradients[];
+};
+
+layout(std430, set = 0, binding = 4) readonly buffer ResidualGradientBuffer {
+    float residualGradients[];
+};
+
+layout(std430, set = 0, binding = 5) writeonly buffer InputGradientBuffer {
+    float inputGradients[];
+};
+
+layout(push_constant) uniform Settings {
+    uint rows;
+    uint size;
+    uint hasResidual;
+} settings;
+
+shared float partialSums[256];
+
+void main() {
+    uint row = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    if (row >= settings.rows) {
+        return;
+    }
+    uint thread = gl_LocalInvocationID.x;
+    uint rowStart = row * settings.size;
+    float sum = 0.0;
+    for (uint i = thread; i < settings.size; i += 256u) {
+        sum += outputGradients[rowStart + i] * weights[i] * inputValues[rowStart + i];
+    }
+    partialSums[thread] = sum;
+    barrier();
+    for (uint distance = 128u; distance > 0u; distance /= 2u) {
+        if (thread < distance) {
+            partialSums[thread] += partialSums[thread + distance];
+        }
+        barrier();
+    }
+    float weightedSum = partialSums[0];
+    float rootMeanSquare = rootMeanSquares[row];
+    float size = float(settings.size);
+    for (uint i = thread; i < settings.size; i += 256u) {
+        float gradient = outputGradients[rowStart + i] * weights[i] / rootMeanSquare - inputValues[rowStart + i] * weightedSum / (size * rootMeanSquare * rootMeanSquare * rootMeanSquare);
+        if (settings.hasResidual != 0u) {
+            gradient += residualGradients[rowStart + i];
+        }
+        inputGradients[rowStart + i] = gradient;
+    }
+}

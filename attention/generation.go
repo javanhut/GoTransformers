@@ -127,7 +127,7 @@ func (attention *SelfAttention) ForwardOneToken(input vectormath.Vector) vectorm
 			positions = attention.choosePositions(headQuery, keyAt, first, last)
 		}
 
-		looked, output := attention.attendTo(headQuery, positions, keyAt, valueAt, head)
+		looked, output := attention.attendTo(headQuery, positions, keyAt, valueAt, head, nil)
 		copy(headSlice(combined, head, attention.HeadSize()), attention.rotateOutput(output, position, rotateBackward))
 		state.lookedAt[head] = looked
 	}

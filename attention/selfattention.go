@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"transformer/activationfunction"
+	"transformer/dropout"
 	"transformer/lowprecision"
 	"transformer/normalization"
 	"transformer/parameter"
@@ -61,12 +62,21 @@ type Options struct {
 	TopK                    int
 	CachePrecision          lowprecision.Precision
 	TrainAtCachePrecision   bool
+	AttentionDropout        float64
 }
 
 type lookedAt struct {
 	positions  []int
 	weights    []float64
 	sinkWeight float64
+	dropMask   []float64
+}
+
+func keptFraction(dropMask []float64, index int) float64 {
+	if dropMask == nil {
+		return 1
+	}
+	return dropMask[index]
 }
 
 type SelfAttention struct {
@@ -95,6 +105,7 @@ type SelfAttention struct {
 	OutputLayer        *perceptron.Layer
 	SinkLogits         vectormath.Vector
 	SinkLogitGradients []float64
+	WeightsDropout     *dropout.Dropout
 
 	borrowers []*SelfAttention
 
@@ -182,12 +193,17 @@ func (attention *SelfAttention) makeQueryAndOutputParts(vectorSize int, options 
 		attention.SinkLogitGradients = vectormath.NewVector(options.NumberOfHeads)
 	}
 	attention.OutputLayer = perceptron.NewLayer(name+".output", vectorSize, vectorSize, activationfunction.Linear)
+	attention.WeightsDropout = dropout.New(options.AttentionDropout)
 }
 
 func (attention *SelfAttention) Options() Options {
 	queryRank := 0
 	if attention.QueryDownLayer != nil {
 		queryRank = attention.QueryDownLayer.NumberOfOutputs()
+	}
+	attentionDropout := 0.0
+	if attention.WeightsDropout != nil {
+		attentionDropout = attention.WeightsDropout.Rate
 	}
 	return Options{
 		NumberOfHeads:           attention.NumberOfHeads,
@@ -205,6 +221,7 @@ func (attention *SelfAttention) Options() Options {
 		TopK:                    attention.TopK,
 		CachePrecision:          attention.CachePrecision,
 		TrainAtCachePrecision:   attention.TrainAtCachePrecision,
+		AttentionDropout:        attentionDropout,
 	}
 }
 
@@ -393,6 +410,7 @@ func (attention *SelfAttention) Forward(inputs vectormath.Matrix) vectormath.Mat
 		panic(fmt.Sprintf("attention %q: each token vector has %d values but attention expects %d", attention.Name, inputs.Columns, attention.VectorSize()))
 	}
 	sequenceLength := inputs.Rows
+	attention.WeightsDropout.StartPass()
 	queries := attention.makeQueries(inputs, 0)
 
 	if attention.SharingMode == OwnKeysAndValues {
@@ -450,7 +468,7 @@ func (attention *SelfAttention) Forward(inputs vectormath.Matrix) vectormath.Mat
 				positions = attention.choosePositions(query, keyAt, first, last)
 			}
 
-			looked, output := attention.attendTo(query, positions, keyAt, valueAt, head)
+			looked, output := attention.attendTo(query, positions, keyAt, valueAt, head, attention.WeightsDropout.NextMask(len(positions)))
 			copy(attention.queryPart(combined, position, head), attention.rotateOutput(output, position, rotateBackward))
 			lookedAtForHead[head][position] = looked
 		}
@@ -461,7 +479,7 @@ func (attention *SelfAttention) Forward(inputs vectormath.Matrix) vectormath.Mat
 	return attention.OutputLayer.Forward(combined)
 }
 
-func (attention *SelfAttention) attendTo(query vectormath.Vector, positions []int, keyAt func(int) vectormath.Vector, valueAt func(int) vectormath.Vector, head int) (lookedAt, vectormath.Vector) {
+func (attention *SelfAttention) attendTo(query vectormath.Vector, positions []int, keyAt func(int) vectormath.Vector, valueAt func(int) vectormath.Vector, head int, dropMask []float64) (lookedAt, vectormath.Vector) {
 	numberOfScores := len(positions)
 	if attention.SinkLogits != nil {
 		numberOfScores++
@@ -474,7 +492,7 @@ func (attention *SelfAttention) attendTo(query vectormath.Vector, positions []in
 		scores[len(positions)] = attention.SinkLogits[head]
 	}
 	allWeights := activationfunction.Softmax(scores)
-	looked := lookedAt{positions: positions, weights: allWeights[:len(positions)]}
+	looked := lookedAt{positions: positions, weights: allWeights[:len(positions)], dropMask: dropMask}
 	if attention.SinkLogits != nil {
 		looked.sinkWeight = allWeights[len(positions)]
 	}
@@ -483,7 +501,7 @@ func (attention *SelfAttention) attendTo(query vectormath.Vector, positions []in
 	for i, position := range positions {
 		value := valueAt(position)
 		for j := range output {
-			output[j] += looked.weights[i] * value[j]
+			output[j] += looked.weights[i] * keptFraction(dropMask, i) * value[j]
 		}
 	}
 	return looked, output
@@ -521,11 +539,11 @@ func (attention *SelfAttention) Backward(outputGradients vectormath.Matrix) vect
 			weightGradients := vectormath.NewVector(len(looked.positions))
 			for i, otherPosition := range looked.positions {
 				otherValue := attention.keyValuePart(attention.lastValues, otherPosition, keyValueHead)
-				weightGradients[i] = vectormath.DotProduct(outputGradient, otherValue)
+				weightGradients[i] = vectormath.DotProduct(outputGradient, otherValue) * keptFraction(looked.dropMask, i)
 
 				otherValueGradient := attention.keyValuePart(valueGradients, otherPosition, keyValueHead)
 				for j := range otherValueGradient {
-					otherValueGradient[j] += looked.weights[i] * outputGradient[j]
+					otherValueGradient[j] += looked.weights[i] * keptFraction(looked.dropMask, i) * outputGradient[j]
 				}
 			}
 

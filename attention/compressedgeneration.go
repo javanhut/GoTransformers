@@ -113,7 +113,7 @@ func (compressed *CompressedAttention) ForwardOneToken(input vectormath.Vector) 
 	combined := vectormath.NewVector(compressed.NumberOfHeads * compressed.HeadSize())
 	for head := 0; head < compressed.NumberOfHeads; head++ {
 		headQuery := headSlice(query, head, compressed.HeadSize())
-		_, output := attendToEntries(headQuery, entries, compressed.scale(), compressed.SinkLogits, head)
+		_, output := attendToEntries(headQuery, entries, compressed.scale(), compressed.SinkLogits, head, nil)
 		copy(headSlice(combined, head, compressed.HeadSize()), compressed.rotateVectorAt(output, 1, position, rotateBackward))
 	}
 	return compressed.OutputLayer.Forward(oneRowOf(combined)).Row(0)

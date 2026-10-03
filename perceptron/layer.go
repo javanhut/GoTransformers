@@ -17,6 +17,8 @@ type Layer struct {
 	WeightGradients   []float64
 	BiasGradients     []float64
 	CompressedWeights *lowprecision.Rows
+	Adapter           *LowRankAdapter
+	FreezeBase        bool
 
 	lastInputs         vectormath.Matrix
 	lastPreActivations vectormath.Matrix
@@ -128,6 +130,10 @@ func (layer *Layer) Forward(inputs vectormath.Matrix) vectormath.Matrix {
 	} else {
 		preActivations = vectormath.MatrixTimesTransposedWeights(inputs, layer.Weights)
 	}
+	if layer.Adapter != nil {
+		layer.lastInputs = inputs
+		layer.adapterForward(inputs, preActivations)
+	}
 	outputs := vectormath.NewMatrix(inputs.Rows, layer.NumberOfOutputs())
 	for example := 0; example < inputs.Rows; example++ {
 		examplePreActivations := preActivations.Row(example)
@@ -144,8 +150,8 @@ func (layer *Layer) Forward(inputs vectormath.Matrix) vectormath.Matrix {
 }
 
 func (layer *Layer) Backward(outputGradients vectormath.Matrix) vectormath.Matrix {
-	if layer.IsCompressed() {
-		panic(fmt.Sprintf("layer %q: weights are compressed for running the model, call DecompressWeights before training", layer.Name))
+	if layer.IsCompressed() && !layer.FreezeBase {
+		panic(fmt.Sprintf("layer %q: weights are compressed for running the model, call DecompressWeights before training, or add a low-rank adapter to train around them", layer.Name))
 	}
 	if layer.lastPreActivations.Values == nil {
 		panic(fmt.Sprintf("layer %q: call Forward before Backward", layer.Name))
@@ -153,7 +159,6 @@ func (layer *Layer) Backward(outputGradients vectormath.Matrix) vectormath.Matri
 	if outputGradients.Rows != layer.lastPreActivations.Rows || outputGradients.Columns != layer.NumberOfOutputs() {
 		panic(fmt.Sprintf("layer %q: output gradients are %dx%d but the last Forward produced %dx%d", layer.Name, outputGradients.Rows, outputGradients.Columns, layer.lastPreActivations.Rows, layer.lastPreActivations.Columns))
 	}
-	layer.makeGradients()
 
 	preActivationGradients := vectormath.NewMatrix(outputGradients.Rows, outputGradients.Columns)
 	for example := 0; example < outputGradients.Rows; example++ {
@@ -161,29 +166,57 @@ func (layer *Layer) Backward(outputGradients vectormath.Matrix) vectormath.Matri
 			preActivation := layer.lastPreActivations.Get(example, neuron)
 			gradient := outputGradients.Get(example, neuron) * layer.Activation.Derivative(preActivation)
 			preActivationGradients.Set(example, neuron, gradient)
-			layer.BiasGradients[neuron] += gradient
 		}
 	}
 
-	weightGradients := vectormath.TransposedTimesMatrix(preActivationGradients, layer.lastInputs)
-	for i := range weightGradients.Values {
-		layer.WeightGradients[i] += weightGradients.Values[i]
+	if !layer.FreezeBase {
+		layer.makeGradients()
+		for example := 0; example < preActivationGradients.Rows; example++ {
+			for neuron, gradient := range preActivationGradients.Row(example) {
+				layer.BiasGradients[neuron] += gradient
+			}
+		}
+		weightGradients := vectormath.TransposedTimesMatrix(preActivationGradients, layer.lastInputs)
+		for i := range weightGradients.Values {
+			layer.WeightGradients[i] += weightGradients.Values[i]
+		}
 	}
 
-	return vectormath.MatrixTimesWeights(preActivationGradients, layer.Weights)
+	var inputGradients vectormath.Matrix
+	if layer.IsCompressed() {
+		inputGradients = layer.multiplyGradientsByCompressedWeights(preActivationGradients)
+	} else {
+		inputGradients = vectormath.MatrixTimesWeights(preActivationGradients, layer.Weights)
+	}
+	if layer.Adapter != nil {
+		inputGradients = vectormath.AddMatrices(inputGradients, layer.adapterBackward(preActivationGradients))
+	}
+	return inputGradients
 }
 
 func (layer *Layer) Parameters() []parameter.Parameter {
-	if layer.IsCompressed() {
-		return []parameter.Parameter{
+	var parameters []parameter.Parameter
+	switch {
+	case layer.IsCompressed():
+		parameters = []parameter.Parameter{
 			{Name: layer.Name + ".weights", Rows: layer.Weights.Rows, Columns: layer.Weights.Columns, ReadOnly: true},
 			{Name: layer.Name + ".biases", Values: layer.Biases, ReadOnly: true},
 		}
+	case layer.FreezeBase:
+		parameters = []parameter.Parameter{
+			{Name: layer.Name + ".weights", Values: layer.Weights.Values, Rows: layer.Weights.Rows, Columns: layer.Weights.Columns, ReadOnly: true},
+			{Name: layer.Name + ".biases", Values: layer.Biases, ReadOnly: true},
+		}
+	default:
+		parameters = []parameter.Parameter{
+			{Name: layer.Name + ".weights", Values: layer.Weights.Values, GradientStorage: &layer.WeightGradients, Rows: layer.Weights.Rows, Columns: layer.Weights.Columns},
+			{Name: layer.Name + ".biases", Values: layer.Biases, GradientStorage: &layer.BiasGradients},
+		}
 	}
-	return []parameter.Parameter{
-		{Name: layer.Name + ".weights", Values: layer.Weights.Values, GradientStorage: &layer.WeightGradients, Rows: layer.Weights.Rows, Columns: layer.Weights.Columns},
-		{Name: layer.Name + ".biases", Values: layer.Biases, GradientStorage: &layer.BiasGradients},
+	if layer.Adapter != nil {
+		parameters = append(parameters, layer.adapterParameters()...)
 	}
+	return parameters
 }
 
 func (layer *Layer) SetWeights(values []float64) error {

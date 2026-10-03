@@ -1,0 +1,58 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer InputBuffer {
+    float inputValues[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer RootMeanSquareBuffer {
+    float rootMeanSquares[];
+};
+
+layout(std430, set = 0, binding = 2) readonly buffer OutputGradientBuffer {
+    float outputGradients[];
+};
+
+layout(std430, set = 0, binding = 3) buffer WeightGradientBuffer {
+    float weightGradients[];
+};
+
+layout(push_constant) uniform Settings {
+    uint rows;
+    uint size;
+    uint accumulate;
+} settings;
+
+const uint columnsPerGroup = 16;
+const uint rowSlices = 16;
+
+shared float partials[rowSlices][columnsPerGroup];
+
+void main() {
+    uint columnInGroup = gl_LocalInvocationID.x;
+    uint slice = gl_LocalInvocationID.y;
+    uint column = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * columnsPerGroup + columnInGroup;
+    float sum = 0.0;
+    if (column < settings.size) {
+        for (uint row = slice; row < settings.rows; row += rowSlices) {
+            uint index = row * settings.size + column;
+            sum += outputGradients[index] * inputValues[index] / rootMeanSquares[row];
+        }
+    }
+    partials[slice][columnInGroup] = sum;
+    barrier();
+    for (uint distance = rowSlices / 2u; distance > 0u; distance /= 2u) {
+        if (slice < distance) {
+            partials[slice][columnInGroup] += partials[slice + distance][columnInGroup];
+        }
+        barrier();
+    }
+    if (slice == 0u && column < settings.size) {
+        float total = partials[0][columnInGroup];
+        if (settings.accumulate != 0u) {
+            total += weightGradients[column];
+        }
+        weightGradients[column] = total;
+    }
+}

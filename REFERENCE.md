@@ -2,7 +2,7 @@
 
 Every package and its public API. Packages are imported as `transformer/<package>`. See [ARCHITECTURE.md](ARCHITECTURE.md) for how they fit together.
 
-**Contents:** [vectormath](#vectormath) · [parameter](#parameter) · [lowprecision](#lowprecision) · [activationfunction](#activationfunction) · [lossfunction](#lossfunction) · [perceptron](#perceptron) · [normalization](#normalization) · [embedding](#embedding) · [feedforward](#feedforward) · [attention](#attention) · [mixtureofexperts](#mixtureofexperts) · [hyperconnection](#hyperconnection) · [optimizer](#optimizer) · [transformer](#transformer) · [tokenizer](#tokenizer) · [safetensors](#safetensors) · [pretrained](#pretrained) · [weightfile](#weightfile) · [datafile](#datafile) · [gpu](#gpu) · [gradientcheck](#gradientcheck)
+**Contents:** [vectormath](#vectormath) · [parameter](#parameter) · [lowprecision](#lowprecision) · [activationfunction](#activationfunction) · [lossfunction](#lossfunction) · [dropout](#dropout) · [perceptron](#perceptron) · [normalization](#normalization) · [embedding](#embedding) · [feedforward](#feedforward) · [attention](#attention) · [mixtureofexperts](#mixtureofexperts) · [hyperconnection](#hyperconnection) · [optimizer](#optimizer) · [transformer](#transformer) · [chat](#chat) · [tokenizer](#tokenizer) · [safetensors](#safetensors) · [pretrained](#pretrained) · [weightfile](#weightfile) · [datafile](#datafile) · [gpu](#gpu) · [gputraining](#gputraining) · [gradientcheck](#gradientcheck)
 
 Shape mistakes (wrong sizes, a missing setting, `Backward` before `Forward`) panic with a message saying exactly what didn't match. File problems return an `error`.
 
@@ -111,6 +111,7 @@ Rows of numbers stored compactly. Used for caches and compressed weights.
 | `NewRows(precision, width)`, `RowsFromMatrix(matrix, precision)` | |
 | `rows.Append(values)`, `rows.Row(index)`, `rows.NumberOfRows()` | `Row` returns a float64 copy |
 | `rows.DotRow(row, vector)` | dot product read straight from the compressed form |
+| `rows.AddScaledRowTo(row, scale, target)` | add `scale × row` into `target`, read straight from the compressed form |
 | `rows.DropOldestRows(count)`, `rows.BytesUsed()` | |
 | `rows.Snapshot()`, `RowsFromSnapshot(snapshot)` | for saving to disk |
 | `RoundTrip(values, precision)`, `RoundTripMatrix(matrix, precision)` | store and read back, to simulate the rounding during training |
@@ -136,6 +137,20 @@ type Activation struct {
 | `Get(name)` | look one up by name |
 | `Softmax(inputs)` | numerically stable; handles `-Inf` |
 | `SoftmaxBackward(outputs, outputGradients)` | gradient with respect to the softmax inputs |
+
+---
+
+## dropout
+
+During training, zeroes a random fraction of values and scales the rest by `1 / (1 − rate)` so the average stays the same. Does nothing unless switched on. Models switch it on only inside their training methods.
+
+| Name | What it does |
+|---|---|
+| `New(rate)` | a dropout, or `nil` when the rate is 0; every method is safe to call on `nil` |
+| `d.Forward(inputs)`, `d.Backward(gradients)` | masks a whole matrix, and uses the same mask going back |
+| `d.StartPass()`, `d.NextMask(size)` | for components that need several masks per pass (attention uses one per head and position) |
+| `d.SetActive(active)`, `d.IsOn()` | |
+| `d.RepeatLastMasks` | reuse the previous pass's masks; for gradient checks |
 
 ---
 
@@ -167,6 +182,10 @@ type Loss struct {
 | `layer.CompressWeights(precision)`, `layer.DecompressWeights()`, `layer.IsCompressed()` | store weights as Float32, Int8 or FP4 (inference only) |
 | `layer.SetWeights(values)`, `layer.SetBiases(values)` | works whether or not the layer is compressed |
 | `layer.WeightBytes()`, `layer.ReleaseGradients()` | |
+| `layer.AddLowRankAdapter(rank, alpha)` | LoRA: adds `(alpha / rank) × Up × Down` to the output; `Up` starts at zero so nothing changes until training; freezes the base weights |
+| `layer.MergeLowRankAdapter()`, `layer.RemoveLowRankAdapter()` | fold the adapter into the weights (not compressed), or drop it |
+| `layer.Adapter`, `layer.FreezeBase` | the adapter, and whether the base weights and biases are frozen (no gradient memory, no weight gradients computed) |
+| `layer.Adapter.InputDropout` | optional dropout on the adapter's input (the usual LoRA dropout) |
 | `NewMultiLayerPerceptron(layerSizes, hiddenActivation, outputActivation)` | e.g. `[]int{2, 8, 1}` makes 2 layers named `layer1`, `layer2` |
 | `network.Forward`, `Backward`, `Parameters`, `Predict(vector)` | |
 | `network.TrainStep(inputs, targets, loss, optimizer)` | one full step, returns the loss |
@@ -192,6 +211,7 @@ type Loss struct {
 | `e.VectorFor(tokenID)`, `e.TableRows(tokenIDs)` | read without touching training memory |
 | `e.AddGradients(tokenIDs, gradients)` | add gradients for given tokens (used by multi-token prediction) |
 | `e.CompressTable(precision)`, `e.SetTable(values)`, `e.TableBytes()`, `e.ReleaseGradients()` | |
+| `e.Frozen` | when true, backward passes add no gradients (set automatically when the model freezes it) |
 | `PositionalEncoding(sequenceLength, vectorSize)`, `PositionalEncodingAt(position, vectorSize)` | sine-wave positions |
 | `NewVocabulary()`, `BuildVocabulary(tokens)` | simple token-to-ID table; ID 0 is `UnknownToken` |
 | `vocabulary.Add`, `Encode`, `Decode`, `Size`, `SaveToFile`, `LoadVocabularyFromFile` | |
@@ -239,6 +259,7 @@ Methods: `Forward`, `Backward`, `Parameters`, `Layers`.
 | `RotaryBase`, `RotateHalves` | base (0 = 10000) and Hugging Face's rotate-half pairing |
 | `WindowSize`, `TopK` | 0 = off |
 | `CachePrecision`, `TrainAtCachePrecision` | cache storage, and rounding during training to match |
+| `AttentionDropout` | dropout on the attention weights while training (0 = off); kept in `WeightsDropout` |
 
 `WindowSize`, `TopK`, `HideFutureTokens`, `CachePrecision` and `TrainAtCachePrecision` are also fields on `SelfAttention` and can be changed after construction.
 
@@ -268,7 +289,7 @@ Methods: `Forward`, `Backward`, `Parameters`, `Layers`.
 | `UseAttentionSink`, `UseRotaryPositions`, `RotaryDimensions` | |
 | `CachePrecision`, `TrainAtCachePrecision` | |
 
-Fields set after construction: `IndexerLossWeight` (default 1), `AttendToAllWhileTraining` (dense warm-up).
+Fields set after construction: `IndexerLossWeight` (default 1), `AttendToAllWhileTraining` (dense warm-up). `CompressedOptions` also takes `AttentionDropout`.
 
 Methods: the same as `SelfAttention`, plus `LastIndexerLoss()`.
 
@@ -351,6 +372,8 @@ All of them are `Resumable`. Fields such as `LearningRate` can be changed betwee
 | `HashRoutedBlocks`, `BalanceUpdateRate` | 0, 0.001 | |
 | `NumberOfResidualStreams` | 1 | more than 1 turns on mHC |
 | `MultiTokenPrediction`, `MultiTokenLossWeight` | false, 0.3 | |
+| `AdapterRank`, `AdapterAlpha` | 0, 0 | LoRA adapters on every block layer (0 = none); set by `AddLowRankAdapters` |
+| `ResidualDropout`, `AttentionDropout`, `AdapterDropout` | 0, 0, 0 | dropout on each block's attention and feed-forward outputs, on attention weights, and on adapter inputs; only while training; 0.1 is a common choice |
 
 ### Building, saving, loading
 
@@ -375,7 +398,10 @@ All of them are `Resumable`. Fields such as `LearningRate` can be changed betwee
 | `Example{PromptIDs, AnswerIDs}` | an empty `PromptIDs` means learn the whole sequence |
 | `model.ComputeGradients(tokenIDs)`, `ComputeAnswerGradients(example)` | forward + backward without updating |
 | `model.Loss(tokenIDs)`, `TrainingLoss(tokenIDs)`, `AnswerLoss(example)` | without gradients; `TrainingLoss` includes multi-token prediction |
-| `model.Freeze(namePrefix)`, `UnfreezeAll()`, `TrainableParameters()`, `FrozenNamePrefixes` | e.g. `Freeze("block1.")`, `Freeze("tokens")` |
+| `model.Freeze(namePrefix)`, `UnfreezeAll()`, `TrainableParameters()`, `FrozenNamePrefixes` | e.g. `Freeze("block1.")`, `Freeze("tokens")`; frozen layers get no gradient memory |
+| `model.AddLowRankAdapters(rank, alpha)` | LoRA on every block layer; everything else freezes; works over compressed weights |
+| `model.AdapterParameters()`, `SaveAdapters(path)`, `LoadAdapters(path)` | adapter-only files (plus `path.adapters.json` with rank and alpha) |
+| `model.MergeAdapters()`, `RemoveAdapters()` | |
 | `model.UpdateExpertBalance()` | called by the training methods |
 | `RandomChunk(tokenIDs, length)`, `RandomChunks(tokenIDs, length, count)` | random training windows |
 | `OneHotTargets(targetIDs, vocabularySize)` | |
@@ -388,6 +414,7 @@ All of them are `Resumable`. Fields such as `LearningRate` can be changed betwee
 | `model.Generate(promptIDs, numberOfNewTokens, temperature)` | temperature 0 = always the most likely token |
 | `model.StartGenerating()`, `Feed(tokenIDs)`, `NextTokenScores(tokenID)`, `ContinueGenerating(count, temperature)` | step by step |
 | `PickToken(scores, temperature)` | |
+| `PickTokenFromTop(scores, temperature, topProbability)` | top-p (nucleus) sampling |
 | `model.CacheBytesUsed()` | |
 | `model.SaveGenerationState(path)`, `LoadGenerationState(path)` | keep a processed prompt for later |
 | `model.ScoreAnswer(promptIDs, answerIDs)` | an `AnswerScore` |
@@ -425,6 +452,27 @@ type GeneratedAnswer struct {
 | `Block` | `AttentionNorm`, `Attention`, `FeedForwardNorm`, `FeedForward`, and optional `AttentionConnection` / `FeedForwardConnection` for mHC |
 | `AttentionLayer`, `FeedForwardLayer` | interfaces a block's parts satisfy, so you can plug in your own |
 | `MultiTokenPredictor` | the extra block that predicts the token after next |
+
+---
+
+## chat
+
+Chat templates and multi-turn conversations for instruct models.
+
+| Name | What it does |
+|---|---|
+| `Message{Role, Content}` | `Role` is `system`, `user` or `assistant` |
+| `LoadTemplate(modelFolder)` | reads `chat_template` from `tokenizer_config.json` and works out the style and default system prompt |
+| `TemplateFromSource(source)` | the same, from the template text |
+| `ChatML(defaultSystemPrompt)`, `Llama3()` | build a template directly (ChatML is used by SmolLM2 and Qwen) |
+| `template.Format(messages, startAssistantReply)` | the exact text the model expects |
+| `template.EndOfTurnText()` | `<|im_end|>` or `<|eot_id|>` |
+| `NewConversation(model, tokenizer, template, systemPrompt)` | an empty system prompt uses the model's default |
+| `conversation.Reply(userText, options, onNewText)` | generates a reply, calling `onNewText` with each new piece of text as it appears; only new tokens are processed each turn |
+| `conversation.Messages`, `TokensReprocessed()` | the history, and how many tokens had to be processed from scratch |
+| `ReplyOptions{MaximumNewTokens, Temperature, TopProbability}`, `DefaultReplyOptions()` | defaults 256, 0.2, 0.9 |
+
+Templates other than ChatML and Llama 3 (for example Mistral's `[INST]`) are refused with an error.
 
 ---
 
@@ -506,6 +554,39 @@ Supports `model_type` `llama` and `qwen2`, single or sharded safetensors, and ti
 | `device.WeightUploads()`, `WeightCacheHits()`, `CachedWeightBytes()`, `ForgetCachedWeights()` | |
 
 A `Device` is a `vectormath.Backend`; pass it to `vectormath.UseBackend`.
+
+**General GPU compute** (what `gputraining` is built on):
+
+| Name | What it does |
+|---|---|
+| `device.NewBuffer(numberOfFloats)` | a float32 buffer on the GPU; `Upload([]float64)`, `Download([]float64)`, `NumberOfFloats()`, `Free()` |
+| `device.NewProgram(name, spirv, numberOfBuffers, pushConstantWords)` | a compute shader from compiled SPIR-V |
+| `device.NewRecorder()` | records many GPU commands to send in one go |
+| `recorder.Begin()`, `Upload`, `Fill`, `Copy`, `Download`, `Run(program, groupsAcross, groupsDown, groupsDeep, pushConstants, buffers...)` | record commands; each waits for the one before it |
+| `recorder.Submit()` | run everything recorded and wait |
+| `recorder.MeasureTime(on)`, `DispatchTimes()` | GPU timings for each command |
+| `Float(value)`, `GroupsFor(threads, threadsPerGroup)` | helpers for push constants and group counts |
+
+---
+
+## gputraining
+
+Trains a `transformer.Model` on the GPU in float32, one whole batch at a time.
+
+| Name | What it does |
+|---|---|
+| `NewTrainer(device, model, options)` | uploads the model; returns an error listing every setting it doesn't support |
+| `DefaultTrainerOptions(learningRate, weightDecay)` | AdamW with betas 0.9 / 0.95, the same as `optimizer.NewAdamW` |
+| `trainer.TrainBatch(sequences)` | learn every next token; sequences may differ in length |
+| `trainer.TrainOnExamples(examples)` | learn only the answers, like `model.TrainOnExamples` |
+| `trainer.CopyWeightsToModel()` | bring the weights back to the CPU model, to generate or save |
+| `trainer.UploadWeightsFromModel()`, `StepsTaken()`, `Close()` | |
+
+**Supported:** standard attention, rotary (any dimensions, base, pairing) or sine-wave positions, grouped-query attention, SwiGLU (optionally clamped), biases, `NormEpsilon`.
+
+**Not yet supported:** sliding windows, top-k, key/value sharing, attention sinks, query/key norm, low-rank queries, keys as values, compressed attention, mixture-of-experts, mHC, multi-token prediction, compressed weights, adapters and dropout.
+
+The token embedding and its AdamW stay on the CPU; everything else runs on the GPU.
 
 ---
 

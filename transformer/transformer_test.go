@@ -86,6 +86,11 @@ func testSettings() map[string]Settings {
 	multiToken.MultiTokenPrediction = true
 	all["multi-token prediction"] = multiToken
 
+	withDropout := tinySettings()
+	withDropout.ResidualDropout = 0.1
+	withDropout.AttentionDropout = 0.1
+	all["dropout everywhere"] = withDropout
+
 	deepSeek := DeepSeekStyleSettings(11)
 	deepSeek.VectorSize = 8
 	deepSeek.NumberOfHeads = 2

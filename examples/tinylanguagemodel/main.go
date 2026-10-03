@@ -30,6 +30,7 @@ func main() {
 	batchSize := flag.Int("batch", 4, "how many chunks each training step learns from")
 	checkpointFolder := flag.String("checkpoint", "", "folder to save checkpoints in, and to resume from if one is already there")
 	checkpointEvery := flag.Int("checkpoint-every", 100, "save a checkpoint every this many steps")
+	dropoutRate := flag.Float64("dropout", 0, "dropout on attention weights and on each block's outputs while training (0 = off, 0.1 is typical)")
 	flag.Parse()
 
 	if *useGPU {
@@ -67,6 +68,8 @@ func main() {
 	if *deepSeekStyle {
 		settings = transformer.DeepSeekStyleSettings(vocabulary.Size())
 	}
+	settings.ResidualDropout = *dropoutRate
+	settings.AttentionDropout = *dropoutRate
 
 	var chosenOptimizer optimizer.Resumable
 	switch *optimizerName {

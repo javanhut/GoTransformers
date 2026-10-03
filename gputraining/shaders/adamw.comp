@@ -1,0 +1,46 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) buffer ValueBuffer {
+    float values[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer GradientBuffer {
+    float gradients[];
+};
+
+layout(std430, set = 0, binding = 2) buffer AverageGradientBuffer {
+    float averageGradients[];
+};
+
+layout(std430, set = 0, binding = 3) buffer AverageSquaredGradientBuffer {
+    float averageSquaredGradients[];
+};
+
+layout(push_constant) uniform Settings {
+    uint count;
+    float learningRate;
+    float momentumDecay;
+    float squaredGradientDecay;
+    float epsilon;
+    float averageGradientCorrection;
+    float averageSquaredGradientCorrection;
+    float shrinkFactor;
+} settings;
+
+void main() {
+    uint index = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 256u + gl_LocalInvocationID.x;
+    if (index >= settings.count) {
+        return;
+    }
+    float gradient = gradients[index];
+    float averageGradient = settings.momentumDecay * averageGradients[index] + (1.0 - settings.momentumDecay) * gradient;
+    float averageSquaredGradient = settings.squaredGradientDecay * averageSquaredGradients[index] + (1.0 - settings.squaredGradientDecay) * gradient * gradient;
+    averageGradients[index] = averageGradient;
+    averageSquaredGradients[index] = averageSquaredGradient;
+    float correctedAverageGradient = averageGradient / settings.averageGradientCorrection;
+    float correctedAverageSquaredGradient = averageSquaredGradient / settings.averageSquaredGradientCorrection;
+    float step = settings.learningRate * correctedAverageGradient / (sqrt(correctedAverageSquaredGradient) + settings.epsilon);
+    values[index] = values[index] * settings.shrinkFactor - step;
+}

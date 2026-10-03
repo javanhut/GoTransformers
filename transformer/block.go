@@ -1,6 +1,7 @@
 package transformer
 
 import (
+	"transformer/dropout"
 	"transformer/feedforward"
 	"transformer/hyperconnection"
 	"transformer/mixtureofexperts"
@@ -59,6 +60,8 @@ type Block struct {
 	FeedForward           FeedForwardLayer
 	AttentionConnection   *hyperconnection.HyperConnection
 	FeedForwardConnection *hyperconnection.HyperConnection
+	AttentionDropout      *dropout.Dropout
+	FeedForwardDropout    *dropout.Dropout
 }
 
 func (block *Block) usesHyperConnections() bool {
@@ -67,36 +70,40 @@ func (block *Block) usesHyperConnections() bool {
 
 func (block *Block) Forward(inputs vectormath.Matrix, tokenIDs []int) vectormath.Matrix {
 	if !block.usesHyperConnections() {
-		attended := block.Attention.Forward(block.AttentionNorm.Forward(inputs))
+		attended := block.AttentionDropout.Forward(block.Attention.Forward(block.AttentionNorm.Forward(inputs)))
 		afterAttention := vectormath.AddMatrices(inputs, attended)
 
-		fedForward := block.FeedForward.Forward(block.FeedForwardNorm.Forward(afterAttention), tokenIDs)
+		fedForward := block.FeedForwardDropout.Forward(block.FeedForward.Forward(block.FeedForwardNorm.Forward(afterAttention), tokenIDs))
 		return vectormath.AddMatrices(afterAttention, fedForward)
 	}
 
 	attentionInput := block.AttentionConnection.LayerInput(inputs)
-	attended := block.Attention.Forward(block.AttentionNorm.Forward(attentionInput))
+	attended := block.AttentionDropout.Forward(block.Attention.Forward(block.AttentionNorm.Forward(attentionInput)))
 	streams := block.AttentionConnection.Combine(attended)
 
 	feedForwardInput := block.FeedForwardConnection.LayerInput(streams)
-	fedForward := block.FeedForward.Forward(block.FeedForwardNorm.Forward(feedForwardInput), tokenIDs)
+	fedForward := block.FeedForwardDropout.Forward(block.FeedForward.Forward(block.FeedForwardNorm.Forward(feedForwardInput), tokenIDs))
 	return block.FeedForwardConnection.Combine(fedForward)
 }
 
 func (block *Block) Backward(outputGradients vectormath.Matrix) vectormath.Matrix {
 	if !block.usesHyperConnections() {
-		feedForwardInputGradients := block.FeedForwardNorm.Backward(block.FeedForward.Backward(outputGradients))
+		fedForwardGradients := block.FeedForwardDropout.Backward(outputGradients)
+		feedForwardInputGradients := block.FeedForwardNorm.Backward(block.FeedForward.Backward(fedForwardGradients))
 		afterAttentionGradients := vectormath.AddMatrices(outputGradients, feedForwardInputGradients)
 
-		attentionInputGradients := block.AttentionNorm.Backward(block.Attention.Backward(afterAttentionGradients))
+		attendedGradients := block.AttentionDropout.Backward(afterAttentionGradients)
+		attentionInputGradients := block.AttentionNorm.Backward(block.Attention.Backward(attendedGradients))
 		return vectormath.AddMatrices(afterAttentionGradients, attentionInputGradients)
 	}
 
 	fedForwardGradients, streamGradientsFromCombine := block.FeedForwardConnection.BackwardCombine(outputGradients)
+	fedForwardGradients = block.FeedForwardDropout.Backward(fedForwardGradients)
 	feedForwardInputGradients := block.FeedForwardNorm.Backward(block.FeedForward.Backward(fedForwardGradients))
 	streamGradients := vectormath.AddMatrices(streamGradientsFromCombine, block.FeedForwardConnection.BackwardLayerInput(feedForwardInputGradients))
 
 	attendedGradients, streamGradientsFromAttentionCombine := block.AttentionConnection.BackwardCombine(streamGradients)
+	attendedGradients = block.AttentionDropout.Backward(attendedGradients)
 	attentionInputGradients := block.AttentionNorm.Backward(block.Attention.Backward(attendedGradients))
 	return vectormath.AddMatrices(streamGradientsFromAttentionCombine, block.AttentionConnection.BackwardLayerInput(attentionInputGradients))
 }

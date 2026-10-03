@@ -2,6 +2,8 @@ package transformer
 
 import (
 	"fmt"
+	"transformer/attention"
+	"transformer/dropout"
 	"transformer/lowprecision"
 	"transformer/perceptron"
 	"transformer/vectormath"
@@ -72,6 +74,9 @@ func (model *Model) GradientBytes() int {
 	total := len(model.TokenEmbedding.TableGradients) * 8
 	for _, layer := range model.allLayers() {
 		total += (len(layer.WeightGradients) + len(layer.BiasGradients)) * 8
+		if layer.Adapter != nil {
+			total += (len(layer.Adapter.DownGradients) + len(layer.Adapter.UpGradients)) * 8
+		}
 	}
 	return total
 }
@@ -129,4 +134,33 @@ func (model *Model) SetWeight(name string, values []float64) error {
 	}
 	vectormath.MarkWeightsChanged()
 	return nil
+}
+
+func (model *Model) allDropouts() []*dropout.Dropout {
+	var dropouts []*dropout.Dropout
+	blocks := model.Blocks
+	if model.MultiTokenPredictor != nil {
+		blocks = append(append([]*Block(nil), blocks...), model.MultiTokenPredictor.Block)
+	}
+	for _, block := range blocks {
+		dropouts = append(dropouts, block.AttentionDropout, block.FeedForwardDropout)
+		switch blockAttention := block.Attention.(type) {
+		case *attention.SelfAttention:
+			dropouts = append(dropouts, blockAttention.WeightsDropout)
+		case *attention.CompressedAttention:
+			dropouts = append(dropouts, blockAttention.WeightsDropout)
+		}
+	}
+	for _, layer := range model.allLayers() {
+		if layer.Adapter != nil {
+			dropouts = append(dropouts, layer.Adapter.InputDropout)
+		}
+	}
+	return dropouts
+}
+
+func (model *Model) setDropoutActive(active bool) {
+	for _, current := range model.allDropouts() {
+		current.SetActive(active)
+	}
 }

@@ -81,6 +81,11 @@ func (model *Model) usesMultiTokenPrediction(tokenIDs []int) bool {
 
 func (model *Model) lossAndGradients(tokenIDs []int, firstCountedToken int, computeGradients bool) float64 {
 	model.checkTokenIDs(tokenIDs)
+	if computeGradients {
+		model.applyFreezing()
+		model.setDropoutActive(true)
+		defer model.setDropoutActive(false)
+	}
 	if model.usesMultiTokenPrediction(tokenIDs) {
 		loss, memory := model.multiTokenForward(tokenIDs, firstCountedToken)
 		if computeGradients {
@@ -134,6 +139,9 @@ func (model *Model) UnfreezeAll() {
 }
 
 func (model *Model) isFrozen(name string) bool {
+	if model.Settings.AdapterRank > 0 && !strings.Contains(name, ".lora.") {
+		return true
+	}
 	for _, prefix := range model.FrozenNamePrefixes {
 		if strings.HasPrefix(name, prefix) {
 			return true
@@ -142,10 +150,20 @@ func (model *Model) isFrozen(name string) bool {
 	return false
 }
 
+func (model *Model) applyFreezing() {
+	for _, layer := range model.allLayers() {
+		if layer.Adapter != nil {
+			continue
+		}
+		layer.FreezeBase = model.isFrozen(layer.Name+".weights") && model.isFrozen(layer.Name+".biases")
+	}
+	model.TokenEmbedding.Frozen = model.isFrozen(model.TokenEmbedding.Name + ".table")
+}
+
 func (model *Model) TrainableParameters() []parameter.Parameter {
 	var trainable []parameter.Parameter
 	for _, current := range model.Parameters() {
-		if !model.isFrozen(current.Name) {
+		if !current.ReadOnly && !model.isFrozen(current.Name) {
 			trainable = append(trainable, current)
 		}
 	}
@@ -164,8 +182,8 @@ func (model *Model) TrainOnExamples(examples []Example, chosenOptimizer optimize
 	if len(examples) == 0 {
 		panic("Model.TrainOnExamples: no examples given")
 	}
-	if model.IsCompressed() {
-		panic("Model.TrainOnExamples: the weights are compressed for running the model, call DecompressWeights before training")
+	if model.IsCompressed() && model.Settings.AdapterRank == 0 {
+		panic("Model.TrainOnExamples: the weights are compressed for running the model, call DecompressWeights before training, or AddLowRankAdapters to train adapters around them")
 	}
 	parameter.ZeroGradients(model.Parameters())
 	totalLoss := 0.0

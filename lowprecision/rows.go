@@ -287,3 +287,44 @@ func RowsFromMatrix(matrix vectormath.Matrix, precision Precision) *Rows {
 	}
 	return rows
 }
+
+func (rows *Rows) AddScaledRowTo(row int, scale float64, target vectormath.Vector) {
+	if row < 0 || row >= rows.numberOfRows {
+		panic(fmt.Sprintf("Rows.AddScaledRowTo: row %d is outside %d rows", row, rows.numberOfRows))
+	}
+	if len(target) != rows.Width {
+		panic(fmt.Sprintf("Rows.AddScaledRowTo: target has %d values but each row holds %d", len(target), rows.Width))
+	}
+	if scale == 0 {
+		return
+	}
+	rowStart := row * rows.Width
+	blocksPerRow := numberOfScaleBlocks(rows.Width)
+	switch rows.Precision {
+	case Float64:
+		for i, value := range rows.float64Values[rowStart : rowStart+rows.Width] {
+			target[i] += scale * value
+		}
+	case Float32:
+		for i, value := range rows.float32Values[rowStart : rowStart+rows.Width] {
+			target[i] += scale * float64(value)
+		}
+	case Int8:
+		values := rows.int8Values[rowStart : rowStart+rows.Width]
+		for i, value := range values {
+			blockScale := float64(rows.scales[row*blocksPerRow+i/ValuesPerScale])
+			target[i] += scale * blockScale * float64(value)
+		}
+	case FP4:
+		packedRow := rows.fp4Values[row*rows.bytesPerRowForFP4() : (row+1)*rows.bytesPerRowForFP4()]
+		for i := range target {
+			packed := packedRow[i/2]
+			code := packed & 15
+			if i%2 == 1 {
+				code = packed >> 4
+			}
+			blockScale := float64(rows.scales[row*blocksPerRow+i/ValuesPerScale])
+			target[i] += scale * blockScale * fp4SignedValues[code]
+		}
+	}
+}

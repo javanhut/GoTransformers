@@ -1,0 +1,150 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer FirstBuffer {
+    float firstValues[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer SecondBuffer {
+    float secondValues[];
+};
+
+layout(std430, set = 0, binding = 2) buffer ResultBuffer {
+    float resultValues[];
+};
+
+layout(push_constant) uniform Shape {
+    uint rows;
+    uint inner;
+    uint columns;
+    uint innerBatchCount;
+    uint firstOffset;
+    uint firstRowStride;
+    uint firstColumnStride;
+    uint firstOuterStride;
+    uint firstInnerStride;
+    uint firstInnerDivisor;
+    uint secondOffset;
+    uint secondRowStride;
+    uint secondColumnStride;
+    uint secondOuterStride;
+    uint secondInnerStride;
+    uint secondInnerDivisor;
+    uint resultOffset;
+    uint resultRowStride;
+    uint resultColumnStride;
+    uint resultOuterStride;
+    uint resultInnerStride;
+    uint accumulate;
+    float scale;
+} shape;
+
+const uint threadsAcross = 16;
+const uint threadsDown = 16;
+const uint rowsPerThread = 8;
+const uint columnsPerThread = 4;
+const uint tileRows = threadsDown * rowsPerThread;
+const uint tileColumns = threadsAcross * columnsPerThread;
+const uint stepSize = 16;
+const uint threadsInGroup = threadsAcross * threadsDown;
+
+shared vec4 firstTile[stepSize][tileRows / 4 + 1];
+shared vec4 secondTile[stepSize][tileColumns / 4 + 1];
+
+void storeResult(uint resultStart, uint row, uint firstColumn, vec4 sums) {
+    if (row >= shape.rows) {
+        return;
+    }
+    for (uint j = 0; j < columnsPerThread; j++) {
+        uint column = firstColumn + j;
+        if (column < shape.columns) {
+            uint resultIndex = resultStart + row * shape.resultRowStride + column * shape.resultColumnStride;
+            float value = shape.scale * sums[j];
+            if (shape.accumulate != 0u) {
+                value += resultValues[resultIndex];
+            }
+            resultValues[resultIndex] = value;
+        }
+    }
+}
+
+void main() {
+    uint batch = gl_WorkGroupID.z;
+    uint outerIndex = batch / shape.innerBatchCount;
+    uint innerIndex = batch % shape.innerBatchCount;
+    uint firstStart = shape.firstOffset + outerIndex * shape.firstOuterStride + (innerIndex / shape.firstInnerDivisor) * shape.firstInnerStride;
+    uint secondStart = shape.secondOffset + outerIndex * shape.secondOuterStride + (innerIndex / shape.secondInnerDivisor) * shape.secondInnerStride;
+    uint resultStart = shape.resultOffset + outerIndex * shape.resultOuterStride + innerIndex * shape.resultInnerStride;
+
+    uint threadColumn = gl_LocalInvocationID.x;
+    uint threadRow = gl_LocalInvocationID.y;
+    uint threadNumber = threadRow * threadsAcross + threadColumn;
+    uint tileFirstRow = gl_WorkGroupID.y * tileRows;
+    uint tileFirstColumn = gl_WorkGroupID.x * tileColumns;
+    bool firstAlongSteps = shape.firstColumnStride == 1u;
+    bool secondAlongSteps = shape.secondColumnStride != 1u;
+
+    vec4 sums0 = vec4(0.0);
+    vec4 sums1 = vec4(0.0);
+    vec4 sums2 = vec4(0.0);
+    vec4 sums3 = vec4(0.0);
+    vec4 sums4 = vec4(0.0);
+    vec4 sums5 = vec4(0.0);
+    vec4 sums6 = vec4(0.0);
+    vec4 sums7 = vec4(0.0);
+
+    for (uint stepStart = 0; stepStart < shape.inner; stepStart += stepSize) {
+        for (uint load = 0; load < (tileRows * stepSize) / threadsInGroup; load++) {
+            uint index = threadNumber + load * threadsInGroup;
+            uint firstStep = firstAlongSteps ? index % stepSize : index / tileRows;
+            uint firstRowInTile = firstAlongSteps ? index / stepSize : index % tileRows;
+            uint firstRow = tileFirstRow + firstRowInTile;
+            uint firstStepIndex = stepStart + firstStep;
+            float firstValue = 0.0;
+            if (firstRow < shape.rows && firstStepIndex < shape.inner) {
+                firstValue = firstValues[firstStart + firstRow * shape.firstRowStride + firstStepIndex * shape.firstColumnStride];
+            }
+            firstTile[firstStep][firstRowInTile / 4u][firstRowInTile % 4u] = firstValue;
+        }
+        for (uint load = 0; load < (tileColumns * stepSize) / threadsInGroup; load++) {
+            uint index = threadNumber + load * threadsInGroup;
+            uint secondStep = secondAlongSteps ? index % stepSize : index / tileColumns;
+            uint secondColumnInTile = secondAlongSteps ? index / stepSize : index % tileColumns;
+            uint secondStepIndex = stepStart + secondStep;
+            uint secondColumn = tileFirstColumn + secondColumnInTile;
+            float secondValue = 0.0;
+            if (secondStepIndex < shape.inner && secondColumn < shape.columns) {
+                secondValue = secondValues[secondStart + secondStepIndex * shape.secondRowStride + secondColumn * shape.secondColumnStride];
+            }
+            secondTile[secondStep][secondColumnInTile / 4u][secondColumnInTile % 4u] = secondValue;
+        }
+        barrier();
+
+        for (uint step = 0; step < stepSize; step++) {
+            vec4 secondPart = secondTile[step][threadColumn];
+            vec4 firstTop = firstTile[step][threadRow * 2u];
+            vec4 firstBottom = firstTile[step][threadRow * 2u + 1u];
+            sums0 += firstTop.x * secondPart;
+            sums1 += firstTop.y * secondPart;
+            sums2 += firstTop.z * secondPart;
+            sums3 += firstTop.w * secondPart;
+            sums4 += firstBottom.x * secondPart;
+            sums5 += firstBottom.y * secondPart;
+            sums6 += firstBottom.z * secondPart;
+            sums7 += firstBottom.w * secondPart;
+        }
+        barrier();
+    }
+
+    uint firstRowOfThread = tileFirstRow + threadRow * rowsPerThread;
+    uint firstColumnOfThread = tileFirstColumn + threadColumn * columnsPerThread;
+    storeResult(resultStart, firstRowOfThread, firstColumnOfThread, sums0);
+    storeResult(resultStart, firstRowOfThread + 1u, firstColumnOfThread, sums1);
+    storeResult(resultStart, firstRowOfThread + 2u, firstColumnOfThread, sums2);
+    storeResult(resultStart, firstRowOfThread + 3u, firstColumnOfThread, sums3);
+    storeResult(resultStart, firstRowOfThread + 4u, firstColumnOfThread, sums4);
+    storeResult(resultStart, firstRowOfThread + 5u, firstColumnOfThread, sums5);
+    storeResult(resultStart, firstRowOfThread + 6u, firstColumnOfThread, sums6);
+    storeResult(resultStart, firstRowOfThread + 7u, firstColumnOfThread, sums7);
+}

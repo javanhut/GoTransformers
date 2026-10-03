@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 	"transformer/activationfunction"
+	"transformer/dropout"
 	"transformer/lowprecision"
 	"transformer/normalization"
 	"transformer/parameter"
@@ -26,6 +27,7 @@ type CompressedOptions struct {
 	RotaryDimensions      int
 	CachePrecision        lowprecision.Precision
 	TrainAtCachePrecision bool
+	AttentionDropout      float64
 }
 
 type entryReference struct {
@@ -36,6 +38,7 @@ type entryReference struct {
 type compressedLookedAt struct {
 	weights    []float64
 	sinkWeight float64
+	dropMask   []float64
 }
 
 type compressedMemory struct {
@@ -88,6 +91,7 @@ type CompressedAttention struct {
 	EntryNorm                    *normalization.RMSNorm
 	SinkLogits                   vectormath.Vector
 	SinkLogitGradients           []float64
+	WeightsDropout               *dropout.Dropout
 	IndexerQueryLayer            *perceptron.Layer
 	IndexerHeadWeightLayer       *perceptron.Layer
 	IndexerKeyLayer              *perceptron.Layer
@@ -143,6 +147,7 @@ func NewCompressedAttention(name string, vectorSize int, options CompressedOptio
 		compressed.OverlapPositionBiases = vectormath.NewMatrix(options.CompressionRate, headSize)
 		compressed.OverlapPositionBiasGradients = vectormath.NewMatrix(options.CompressionRate, headSize)
 	}
+	compressed.WeightsDropout = dropout.New(options.AttentionDropout)
 	if options.UseAttentionSink {
 		compressed.SinkLogits = vectormath.NewVector(options.NumberOfHeads)
 		compressed.SinkLogitGradients = vectormath.NewVector(options.NumberOfHeads)
@@ -295,7 +300,7 @@ func indexerScoreOf(indexerQuery vectormath.Vector, headWeights vectormath.Vecto
 	return score
 }
 
-func attendToEntries(query vectormath.Vector, entries []vectormath.Vector, scale float64, sinkLogits vectormath.Vector, head int) (compressedLookedAt, vectormath.Vector) {
+func attendToEntries(query vectormath.Vector, entries []vectormath.Vector, scale float64, sinkLogits vectormath.Vector, head int, dropMask []float64) (compressedLookedAt, vectormath.Vector) {
 	numberOfScores := len(entries)
 	if sinkLogits != nil {
 		numberOfScores++
@@ -308,14 +313,14 @@ func attendToEntries(query vectormath.Vector, entries []vectormath.Vector, scale
 		scores[len(entries)] = sinkLogits[head]
 	}
 	allWeights := activationfunction.Softmax(scores)
-	looked := compressedLookedAt{weights: allWeights[:len(entries)]}
+	looked := compressedLookedAt{weights: allWeights[:len(entries)], dropMask: dropMask}
 	if sinkLogits != nil {
 		looked.sinkWeight = allWeights[len(entries)]
 	}
 	output := vectormath.NewVector(len(query))
 	for i, entry := range entries {
 		for j := range output {
-			output[j] += looked.weights[i] * entry[j]
+			output[j] += looked.weights[i] * keptFraction(dropMask, i) * entry[j]
 		}
 	}
 	return looked, output
@@ -341,6 +346,7 @@ func (compressed *CompressedAttention) Forward(inputs vectormath.Matrix) vectorm
 	sequenceLength := inputs.Rows
 	numberOfBlocks := sequenceLength / compressed.CompressionRate
 	memory := compressedMemory{sequenceLength: sequenceLength, numberOfBlocks: numberOfBlocks}
+	compressed.WeightsDropout.StartPass()
 
 	memory.queries = compressed.makeQueries(inputs, 0)
 	memory.rawEntries = compressed.EntryLayer.Forward(inputs)
@@ -404,7 +410,7 @@ func (compressed *CompressedAttention) Forward(inputs vectormath.Matrix) vectorm
 		memory.looked[position] = make([]compressedLookedAt, compressed.NumberOfHeads)
 		for head := 0; head < compressed.NumberOfHeads; head++ {
 			query := headSlice(memory.queries.Row(position), head, compressed.HeadSize())
-			looked, output := attendToEntries(query, entries, compressed.scale(), compressed.SinkLogits, head)
+			looked, output := attendToEntries(query, entries, compressed.scale(), compressed.SinkLogits, head, compressed.WeightsDropout.NextMask(len(entries)))
 			output = compressed.rotateVectorAt(output, 1, position, rotateBackward)
 			copy(headSlice(combined.Row(position), head, compressed.HeadSize()), output)
 			memory.looked[position][head] = looked
@@ -504,9 +510,9 @@ func (compressed *CompressedAttention) Backward(outputGradients vectormath.Matri
 
 			weightGradients := vectormath.NewVector(len(entries))
 			for i, entry := range entries {
-				weightGradients[i] = vectormath.DotProduct(outputGradient, entry)
+				weightGradients[i] = vectormath.DotProduct(outputGradient, entry) * keptFraction(looked.dropMask, i)
 				for j := range entryGradients[i] {
-					entryGradients[i][j] += looked.weights[i] * outputGradient[j]
+					entryGradients[i][j] += looked.weights[i] * keptFraction(looked.dropMask, i) * outputGradient[j]
 				}
 			}
 

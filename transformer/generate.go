@@ -2,6 +2,7 @@ package transformer
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"transformer/activationfunction"
 	"transformer/embedding"
@@ -59,6 +60,38 @@ func PickToken(scores vectormath.Vector, temperature float64) int {
 		}
 	}
 	return len(probabilities) - 1
+}
+
+func PickTokenFromTop(scores vectormath.Vector, temperature float64, topProbability float64) int {
+	if temperature <= 0 || topProbability <= 0 {
+		return vectormath.IndexOfMax(scores)
+	}
+	if topProbability >= 1 {
+		return PickToken(scores, temperature)
+	}
+	probabilities := activationfunction.Softmax(vectormath.Scale(scores, 1/temperature))
+	tokenIDs := make([]int, len(probabilities))
+	for tokenID := range tokenIDs {
+		tokenIDs[tokenID] = tokenID
+	}
+	sort.Slice(tokenIDs, func(i int, j int) bool {
+		return probabilities[tokenIDs[i]] > probabilities[tokenIDs[j]]
+	})
+	keptProbability := 0.0
+	keptCount := 0
+	for keptCount < len(tokenIDs) && keptProbability < topProbability {
+		keptProbability += probabilities[tokenIDs[keptCount]]
+		keptCount++
+	}
+	randomPoint := vectormath.RandomNumberBetween(0, keptProbability)
+	total := 0.0
+	for _, tokenID := range tokenIDs[:keptCount] {
+		total += probabilities[tokenID]
+		if randomPoint < total {
+			return tokenID
+		}
+	}
+	return tokenIDs[keptCount-1]
 }
 
 func (model *Model) ContinueGenerating(numberOfNewTokens int, temperature float64) []int {

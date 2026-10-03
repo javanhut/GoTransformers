@@ -1,0 +1,36 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer QueryHeadBuffer {
+    float perQueryHead[];
+};
+
+layout(std430, set = 0, binding = 1) writeonly buffer KeyValueHeadBuffer {
+    float perKeyValueHead[];
+};
+
+layout(push_constant) uniform Settings {
+    uint rows;
+    uint keyValueHeads;
+    uint groupSize;
+    uint headSize;
+} settings;
+
+void main() {
+    uint index = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 256u + gl_LocalInvocationID.x;
+    uint valuesPerRow = settings.keyValueHeads * settings.headSize;
+    if (index >= settings.rows * valuesPerRow) {
+        return;
+    }
+    uint row = index / valuesPerRow;
+    uint keyValueHead = (index % valuesPerRow) / settings.headSize;
+    uint dimension = index % settings.headSize;
+    uint queryHeads = settings.keyValueHeads * settings.groupSize;
+    float sum = 0.0;
+    for (uint member = 0; member < settings.groupSize; member++) {
+        uint queryHead = keyValueHead * settings.groupSize + member;
+        sum += perQueryHead[row * queryHeads * settings.headSize + queryHead * settings.headSize + dimension];
+    }
+    perKeyValueHead[index] = sum;
+}

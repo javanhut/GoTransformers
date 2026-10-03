@@ -1,0 +1,86 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer ScoreBuffer {
+    float scores[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer TargetBuffer {
+    float targets[];
+};
+
+layout(std430, set = 0, binding = 2) readonly buffer RowWeightBuffer {
+    float rowWeights[];
+};
+
+layout(std430, set = 0, binding = 3) writeonly buffer ScoreGradientBuffer {
+    float scoreGradients[];
+};
+
+layout(std430, set = 0, binding = 4) writeonly buffer RowLossBuffer {
+    float rowLosses[];
+};
+
+layout(push_constant) uniform Settings {
+    uint rows;
+    uint vocabularySize;
+} settings;
+
+shared float partials[256];
+
+void main() {
+    uint row = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    if (row >= settings.rows) {
+        return;
+    }
+    uint thread = gl_LocalInvocationID.x;
+    uint rowStart = row * settings.vocabularySize;
+    float weight = rowWeights[row];
+    uint target = uint(targets[row]);
+
+    float largest = -3.402823e38;
+    for (uint column = thread; column < settings.vocabularySize; column += 256u) {
+        largest = max(largest, scores[rowStart + column]);
+    }
+    partials[thread] = largest;
+    barrier();
+    for (uint distance = 128u; distance > 0u; distance /= 2u) {
+        if (thread < distance) {
+            partials[thread] = max(partials[thread], partials[thread + distance]);
+        }
+        barrier();
+    }
+    largest = partials[0];
+    barrier();
+
+    float total = 0.0;
+    for (uint column = thread; column < settings.vocabularySize; column += 256u) {
+        total += exp(scores[rowStart + column] - largest);
+    }
+    partials[thread] = total;
+    barrier();
+    for (uint distance = 128u; distance > 0u; distance /= 2u) {
+        if (thread < distance) {
+            partials[thread] += partials[thread + distance];
+        }
+        barrier();
+    }
+    total = partials[0];
+
+    for (uint column = thread; column < settings.vocabularySize; column += 256u) {
+        float probability = exp(scores[rowStart + column] - largest) / total;
+        float gradient = probability;
+        if (column == target) {
+            gradient -= 1.0;
+        }
+        scoreGradients[rowStart + column] = weight * gradient;
+    }
+    if (thread == 0u) {
+        float loss = 0.0;
+        if (weight > 0.0) {
+            loss = weight * (log(total) + largest - scores[rowStart + target]);
+        }
+        rowLosses[row] = loss;
+    }
+}

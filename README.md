@@ -17,10 +17,10 @@ The Go module is named `transformer`, so packages are imported as `transformer/a
 | Attention | Multi-head self-attention with a key/value cache, sliding windows, top-k, rotary positions (full or partial), grouped-query and multi-query attention, keys that double as values, query/key normalization, attention sinks, low-rank queries, cross-layer key/value sharing |
 | Compressed attention | DeepSeek-V4 style heavily compressed (HCA) and compressed sparse (CSA) attention with a lightning indexer |
 | Model parts | RMSNorm, LayerNorm, SwiGLU / GeGLU / ReGLU (with optional clamping), mixture-of-experts, mHC residual streams, multi-token prediction |
-| Training | SGD, momentum, Adam, AdamW, Muon; batches; answer-only fine-tuning; freezing layers; checkpoints that resume exactly |
-| Running models | Generation with a cache, cache saved to disk, answer scoring, "I don't know" when confidence is low, weights compressed to Float32, Int8 or FP4 |
+| Training | SGD, momentum, Adam, AdamW, Muon; batches; dropout; answer-only fine-tuning; freezing layers; LoRA adapters (also over compressed Int8/FP4 weights); checkpoints that resume exactly |
+| Running models | Generation with a cache, top-p sampling, chat templates and multi-turn conversations, cache saved to disk, answer scoring, "I don't know" when confidence is low, weights compressed to Float32, Int8 or FP4 |
 | Files | Byte-level BPE tokenizer (train your own or load Hugging Face `tokenizer.json`), safetensors, Llama and Qwen 2 models from Hugging Face, CSV/TSV/text data, weight files |
-| Hardware | Multi-threaded CPU math, Vulkan GPU backend with an optional weight cache |
+| Hardware | Multi-threaded CPU math, Vulkan GPU backend with an optional weight cache, float32 training entirely on the GPU (about 26× faster than the CPU on an integrated GPU) |
 
 ## Getting started
 
@@ -41,7 +41,10 @@ go run ./examples/tinylanguagemodel
 | `go run ./examples/tinylanguagemodel` | Training a character-level transformer on any text file |
 | `go run ./examples/finetune` | Fine-tuning on question/answer pairs and answering "I don't know" when unsure |
 | `go run ./examples/runpretrained -model <folder>` | Running a real open model downloaded from Hugging Face |
+| `go run ./examples/chat -model <folder>` | Chatting with an instruct model in the terminal |
+| `go run ./examples/lora -model <folder>` | Teaching an instruct model new facts with LoRA adapters over Int8 weights |
 | `go run ./examples/gpucheck` | Listing GPUs and timing CPU against GPU |
+| `go run ./examples/gputrain -text book.txt -tokens bpe` | Training a model from scratch on the GPU |
 
 Useful flags for `tinylanguagemodel`:
 
@@ -122,6 +125,22 @@ if err == nil {
 }
 ```
 
+Train a whole model on the GPU:
+
+```go
+trainer, err := gputraining.NewTrainer(device, model, gputraining.DefaultTrainerOptions(0.001, 0.1))
+if err != nil {
+	panic(err)
+}
+defer trainer.Close()
+for step := 0; step < 5000; step++ {
+	loss := trainer.TrainBatch(transformer.RandomChunks(tokenIDs, 128, 16))
+	fmt.Println(step, loss)
+}
+trainer.CopyWeightsToModel()
+model.Save("story-model.weights")
+```
+
 Turn on the DeepSeek-V4 style architecture:
 
 ```go
@@ -156,8 +175,9 @@ Those tests compare the model's output with an independent, deliberately simple 
 
 ## Current limits
 
-- Training uses float64. Compressed weights are for running models only.
+- CPU training uses float64. Compressed weights are for running models only.
+- GPU training covers standard models only (no compressed attention, experts, mHC, multi-token prediction, adapters or dropout yet), and has only been tested on an Intel integrated GPU.
 - Compressed models can't be saved yet; load the original and compress it again.
-- Batches are processed one sequence at a time, so the GPU only helps with large layers.
+- On the CPU path, batches are processed one sequence at a time. The GPU trainer processes the whole batch at once.
 - Only Llama and Qwen 2 style models with byte-level BPE tokenizers load. SentencePiece tokenizers (Llama 2, Mistral) don't yet.
 - One GPU at a time.

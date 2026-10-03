@@ -64,6 +64,13 @@ type Settings struct {
 
 	MultiTokenPrediction bool
 	MultiTokenLossWeight float64
+
+	AdapterRank  int
+	AdapterAlpha float64
+
+	ResidualDropout  float64
+	AttentionDropout float64
+	AdapterDropout   float64
 }
 
 func SmallSettings(vocabularySize int) Settings {
@@ -211,6 +218,14 @@ func (settings Settings) Check() error {
 	if settings.NumberOfResidualStreams < 0 {
 		return fmt.Errorf("NumberOfResidualStreams can't be negative (1 means a normal residual connection), got %d", settings.NumberOfResidualStreams)
 	}
+	for name, rate := range map[string]float64{"ResidualDropout": settings.ResidualDropout, "AttentionDropout": settings.AttentionDropout, "AdapterDropout": settings.AdapterDropout} {
+		if rate < 0 || rate >= 1 {
+			return fmt.Errorf("%s must be at least 0 and below 1, got %v", name, rate)
+		}
+	}
+	if settings.AdapterRank < 0 || settings.AdapterAlpha < 0 {
+		return fmt.Errorf("AdapterRank and AdapterAlpha can't be negative (0 means no adapters), got %d and %v", settings.AdapterRank, settings.AdapterAlpha)
+	}
 	if settings.MultiTokenLossWeight < 0 {
 		return fmt.Errorf("MultiTokenLossWeight can't be negative, got %v", settings.MultiTokenLossWeight)
 	}
@@ -242,6 +257,7 @@ func (settings Settings) standardOptions() attention.Options {
 		RotateHalves:            settings.RotateHalves,
 		CachePrecision:          settings.CachePrecision,
 		TrainAtCachePrecision:   settings.TrainAtCachePrecision,
+		AttentionDropout:        settings.AttentionDropout,
 	}
 }
 
@@ -255,6 +271,7 @@ func (settings Settings) compressedOptions(kind AttentionKind) attention.Compres
 		RotaryDimensions:      settings.RotaryDimensions,
 		CachePrecision:        settings.CachePrecision,
 		TrainAtCachePrecision: settings.TrainAtCachePrecision,
+		AttentionDropout:      settings.AttentionDropout,
 	}
 	if kind == CompressedSparseAttention {
 		options.CompressionRate = settings.CompressionRate

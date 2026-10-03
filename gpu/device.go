@@ -2,6 +2,7 @@ package gpu
 
 import (
 	"fmt"
+	"math"
 	"math/bits"
 	"runtime"
 	"sync"
@@ -49,6 +50,8 @@ type Device struct {
 
 	maxStorageBufferRange uint64
 	maxWorkGroupCount     [3]uint32
+	nanosecondsPerTick    float64
+	canMeasureTime        bool
 
 	shaderModule        uint64
 	fewRowsShaderModule uint64
@@ -77,6 +80,11 @@ type Device struct {
 	weightUseCounter uint64
 	weightUploads    int
 	weightCacheHits  int
+
+	computeBuffers   map[*Buffer]bool
+	computePrograms  map[*Program]bool
+	computeRecorders map[*Recorder]bool
+	uploadRecorder   *Recorder
 }
 
 func Open(index int) (*Device, error) {
@@ -107,6 +115,9 @@ func openDevice(index int, forceStagingBuffers bool) (*Device, error) {
 		instance:                                             instance,
 		physicalDevice:                                       physicalDevices[index],
 		weightCache:                                          map[weightCacheKey]*cachedWeights{},
+		computeBuffers:                                       map[*Buffer]bool{},
+		computePrograms:                                      map[*Program]bool{},
+		computeRecorders:                                     map[*Recorder]bool{},
 	}
 	kind := device.info.Kind
 	device.useStagingBuffers = forceStagingBuffers || !(kind == "integrated" || kind == "cpu")
@@ -124,6 +135,8 @@ func (device *Device) setUp() error {
 	for i := 0; i < 3; i++ {
 		device.maxWorkGroupCount[i] = properties.uint32At(propertiesLimitsOffset + limitsMaxComputeWorkGroupCountOffset + 4*i)
 	}
+	device.nanosecondsPerTick = float64(math.Float32frombits(properties.uint32At(propertiesLimitsOffset + limitsTimestampPeriodOffset)))
+	device.canMeasureTime = properties.uint32At(propertiesLimitsOffset+limitsTimestampComputeAndGraphicsOffset) != 0 && device.nanosecondsPerTick > 0
 	if properties.uint32At(propertiesLimitsOffset+limitsMaxComputeWorkGroupInvocationsOffset) < 256 {
 		return fmt.Errorf("the GPU can't run 256 threads in a group")
 	}
@@ -768,6 +781,7 @@ func (device *Device) Close() {
 	if device.logicalDevice != 0 {
 		vkDeviceWaitIdle(device.logicalDevice)
 		device.forgetAllWeights()
+		device.freeComputeObjects()
 		for _, buffer := range []*gpuBuffer{&device.firstBuffer, &device.secondBuffer, &device.resultBuffer, &device.firstStaging, &device.secondStaging, &device.resultStaging} {
 			device.destroyBuffer(buffer)
 		}

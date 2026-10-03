@@ -1,0 +1,52 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) buffer ValueBuffer {
+    float values[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer CosineBuffer {
+    float cosines[];
+};
+
+layout(std430, set = 0, binding = 2) readonly buffer SineBuffer {
+    float sines[];
+};
+
+layout(push_constant) uniform Settings {
+    uint rows;
+    uint numberOfHeads;
+    uint headSize;
+    uint rotaryDimensions;
+    uint sequenceLength;
+    uint rotateHalves;
+    float direction;
+} settings;
+
+void main() {
+    uint pairsPerHead = settings.rotaryDimensions / 2u;
+    uint index = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 256u + gl_LocalInvocationID.x;
+    if (index >= settings.rows * settings.numberOfHeads * pairsPerHead) {
+        return;
+    }
+    uint pair = index % pairsPerHead;
+    uint head = (index / pairsPerHead) % settings.numberOfHeads;
+    uint row = index / (pairsPerHead * settings.numberOfHeads);
+    uint position = row % settings.sequenceLength;
+
+    float cosine = cosines[position * pairsPerHead + pair];
+    float sine = settings.direction * sines[position * pairsPerHead + pair];
+    uint headStart = row * settings.numberOfHeads * settings.headSize + head * settings.headSize;
+    uint firstRotated = headStart + settings.headSize - settings.rotaryDimensions;
+    uint firstIndex = firstRotated + 2u * pair;
+    uint secondIndex = firstIndex + 1u;
+    if (settings.rotateHalves != 0u) {
+        firstIndex = firstRotated + pair;
+        secondIndex = firstIndex + pairsPerHead;
+    }
+    float first = values[firstIndex];
+    float second = values[secondIndex];
+    values[firstIndex] = first * cosine - second * sine;
+    values[secondIndex] = first * sine + second * cosine;
+}

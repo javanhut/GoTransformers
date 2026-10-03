@@ -26,6 +26,7 @@ Each package only imports packages from the layers above it.
    normalization        RMSNorm, LayerNorm
    embedding            token embeddings, vocabulary, sine-wave positions
    gradientcheck        finite-difference checker for any Forward/Backward pair
+   dropout              random masking while training, off otherwise
    optimizer            SGD, momentum, Adam, AdamW, Muon, saveable state
 
 3. transformer parts
@@ -39,11 +40,13 @@ Each package only imports packages from the layers above it.
 
 5. outside world
    tokenizer            byte-level BPE, Hugging Face tokenizer.json
+   chat                 chat templates (ChatML, Llama 3) and multi-turn conversations
    safetensors          read and write safetensors files
    pretrained           load Llama and Qwen 2 models from Hugging Face folders
    weightfile           save and load named weights as text or binary
    datafile             CSV, TSV, text, question/answer pairs
-   gpu                  Vulkan backend for vectormath
+   gpu                  Vulkan backend for vectormath, and general GPU buffers, programs and recorders
+   gputraining          float32 training of standard models entirely on the GPU
 ```
 
 ## Data conventions
@@ -158,6 +161,8 @@ scores = model.NextTokenScores(nextID)
 - `CompressedAttention` keeps compressed entries, their indexer keys, the window, and the uncompressed tail of the current block.
 - `model.SaveGenerationState(path)` and `LoadGenerationState(path)` write all of that to disk with a fingerprint of the model's settings and weights, so a long prompt is processed once and reused later.
 
+**Chat.** `chat.Conversation` builds the full prompt with the model's template every turn. It compares that text with what it has already fed the model, and feeds only the new part, so the cache carries over and each turn costs only its new tokens. If the text ever stops matching (for example after editing the history), it starts the cache again from the beginning.
+
 ### Compressed weights
 
 `model.CompressWeights(precision)` (or `Settings.WeightPrecision`, or `pretrained.LoadLlamaWithPrecision`) replaces each layer's float64 `Weights` with `CompressedWeights`, a `lowprecision.Rows`.
@@ -183,10 +188,36 @@ Both run the same steps:
 
 The loss counts only the positions predicting answer tokens, which is how answer-only fine-tuning works; plain text counts every position.
 
+**Freezing saves work.** Before each step, layers whose weights are all frozen get `FreezeBase`. Their backward pass still passes gradients down to earlier layers, but skips computing and storing their own weight gradients. A frozen embedding table skips its backward pass entirely.
+
+**Dropout.** Three settings: `ResidualDropout` (each block's attention and feed-forward outputs, before they're added back), `AttentionDropout` (the attention weights, inside both attention types) and `AdapterDropout` (LoRA inputs).
+- Every dropout starts switched off. The model switches them all on while it computes gradients and off again afterwards. `Forward`, generation, scoring, chat and the loss functions without gradients never drop anything, which is why generation still matches training-mode output exactly.
+- Each dropout remembers the mask it used so the backward pass applies the same one. For gradient checks, `RepeatLastMasks` replays the previous pass's masks so the loss stops being random.
+- The masks come from the shared random generator, so checkpoints still resume exactly.
+
+**LoRA.** `model.AddLowRankAdapters(rank, alpha)` gives every block layer an adapter: two small matrices, `Down` (rank × inputs) and `Up` (outputs × rank).
+- The layer's output becomes `x × Wᵀ + b + (alpha / rank) × x × Downᵀ × Upᵀ`. `Up` starts at zero, so adding adapters changes nothing until training.
+- Everything except the adapters is frozen, so the optimizer only keeps state for about 1% of the values.
+- The base weights may be compressed: the backward pass reads Int8 or FP4 rows directly to pass gradients to earlier layers (the "QLoRA" approach).
+- Adapters save to their own small file (`SaveAdapters`), or merge into uncompressed weights (`MergeAdapters`). Their rank and alpha live in `Settings`, so `Save` / `LoadModel` keep them.
+
 **Optimizers.**
 - `Muon` uses hybrid Newton-Schulz orthogonalization on weight matrices, and an inner `AdamW` for vectors and anything marked `UseAdamW` (embeddings, the output layer, norms, mHC biases).
 - `Adam` and `AdamW` keep running averages by parameter name.
 - Every optimizer can save and restore its state, which is what lets `SaveCheckpoint` / `LoadCheckpoint` resume a run exactly: they save the weights, optimizer state, frozen prefixes, step count and random generator state.
+
+## Training on the GPU
+
+`gputraining.Trainer` is a second, separate implementation of the training step for standard models. It works in float32, with data kept on the GPU:
+
+- **Weights live on the GPU** as `gpu.Buffer`s, along with AdamW's running averages. They come back to the CPU model only when you call `CopyWeightsToModel`.
+- **A batch is one big computation.** Sequences are padded to the same length and stacked, so every matrix multiply covers the whole batch. The padding is masked out of the loss, and causal attention means it can't affect real tokens.
+- **One submit per step.** The forward pass, backward pass, loss and AdamW updates of every layer are recorded with a `gpu.Recorder` and sent to the GPU together, avoiding a round trip after every operation.
+- **About 15 small shaders** (`gputraining/shaders`): strided batched matrix multiply, bias and column sums, RMSNorm forward and backward, RoPE, causal softmax and its backward pass, summing grouped-query heads, SwiGLU forward and backward, residual add, masked cross-entropy, and AdamW. Each is tested against a float64 CPU version.
+- **The embedding stays on the CPU.** Looking up token vectors and scattering their gradients back are cheap there, so the table and its AdamW stay on the CPU, and only the batch's vectors and their gradients cross over each step.
+- **Checked against the CPU path:** one GPU step matches `transformer.Model.TrainBatch` with `optimizer.AdamW`. The loss agrees to about 1e-7 relative, and gradients to about 2e-6 of the largest gradient.
+
+On the Intel Meteor Lake integrated GPU, a 6.9M-parameter model trains at about 6,900 tokens/s, against 268 for the CPU path.
 
 ## File formats
 

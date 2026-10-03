@@ -13,6 +13,7 @@ type Embedding struct {
 	Table           vectormath.Matrix
 	TableGradients  []float64
 	CompressedTable *lowprecision.Rows
+	Frozen          bool
 
 	lastTokenIDs []int
 }
@@ -97,6 +98,9 @@ func (embedding *Embedding) ReleaseGradients() {
 func (embedding *Embedding) AddGradients(tokenIDs []int, gradients vectormath.Matrix) {
 	if gradients.Rows != len(tokenIDs) || gradients.Columns != embedding.VectorSize() {
 		panic(fmt.Sprintf("embedding %q: got %dx%d gradients for %d tokens of size %d", embedding.Name, gradients.Rows, gradients.Columns, len(tokenIDs), embedding.VectorSize()))
+	}
+	if embedding.Frozen {
+		return
 	}
 	embedding.makeGradients()
 	vectorSize := embedding.VectorSize()

@@ -1,0 +1,56 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer InputBuffer {
+    float inputValues[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer WeightBuffer {
+    float weights[];
+};
+
+layout(std430, set = 0, binding = 2) writeonly buffer OutputBuffer {
+    float outputValues[];
+};
+
+layout(std430, set = 0, binding = 3) writeonly buffer RootMeanSquareBuffer {
+    float rootMeanSquares[];
+};
+
+layout(push_constant) uniform Settings {
+    uint rows;
+    uint size;
+    float epsilon;
+} settings;
+
+shared float partialSums[256];
+
+void main() {
+    uint row = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    if (row >= settings.rows) {
+        return;
+    }
+    uint thread = gl_LocalInvocationID.x;
+    uint rowStart = row * settings.size;
+    float sum = 0.0;
+    for (uint i = thread; i < settings.size; i += 256u) {
+        float value = inputValues[rowStart + i];
+        sum += value * value;
+    }
+    partialSums[thread] = sum;
+    barrier();
+    for (uint distance = 128u; distance > 0u; distance /= 2u) {
+        if (thread < distance) {
+            partialSums[thread] += partialSums[thread + distance];
+        }
+        barrier();
+    }
+    float rootMeanSquare = sqrt(partialSums[0] / float(settings.size) + settings.epsilon);
+    for (uint i = thread; i < settings.size; i += 256u) {
+        outputValues[rowStart + i] = inputValues[rowStart + i] / rootMeanSquare * weights[i];
+    }
+    if (thread == 0u) {
+        rootMeanSquares[row] = rootMeanSquare;
+    }
+}

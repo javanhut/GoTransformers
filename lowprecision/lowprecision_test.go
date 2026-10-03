@@ -101,3 +101,27 @@ func TestDotRowMatchesReadingTheRow(t *testing.T) {
 		}
 	}
 }
+
+func TestAddScaledRowToMatchesReadingTheRow(t *testing.T) {
+	for _, precision := range []Precision{Float64, Float32, Int8, FP4} {
+		rows := NewRows(precision, 21)
+		values := vectormath.NewVector(21)
+		for i := range values {
+			values[i] = vectormath.RandomNumberBetween(-2, 2)
+		}
+		rows.Append(values)
+		target := vectormath.NewVector(21)
+		target[3] = 1
+		rows.AddScaledRowTo(0, 0.5, target)
+		readBack := rows.Row(0)
+		for i := range target {
+			want := 0.5 * readBack[i]
+			if i == 3 {
+				want += 1
+			}
+			if math.Abs(target[i]-want) > 1e-12 {
+				t.Errorf("%v value %d: got %v, want %v", precision, i, target[i], want)
+			}
+		}
+	}
+}

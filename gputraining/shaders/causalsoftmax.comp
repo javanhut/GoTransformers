@@ -1,0 +1,70 @@
+#version 450
+
+layout(local_size_x = 32, local_size_y = 8) in;
+
+layout(std430, set = 0, binding = 0) buffer ScoreBuffer {
+    float scores[];
+};
+
+layout(push_constant) uniform Settings {
+    uint rows;
+    uint sequenceLength;
+} settings;
+
+const uint threadsPerRow = 32;
+const uint rowsPerGroup = 8;
+
+shared float partials[rowsPerGroup][threadsPerRow];
+
+void main() {
+    uint rowInGroup = gl_LocalInvocationID.y;
+    uint thread = gl_LocalInvocationID.x;
+    uint row = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * rowsPerGroup + rowInGroup;
+    bool rowExists = row < settings.rows;
+    uint query = rowExists ? row % settings.sequenceLength : 0u;
+    uint rowStart = row * settings.sequenceLength;
+
+    float largest = -3.402823e38;
+    if (rowExists) {
+        for (uint key = thread; key <= query; key += threadsPerRow) {
+            largest = max(largest, scores[rowStart + key]);
+        }
+    }
+    partials[rowInGroup][thread] = largest;
+    barrier();
+    for (uint distance = threadsPerRow / 2u; distance > 0u; distance /= 2u) {
+        if (thread < distance) {
+            partials[rowInGroup][thread] = max(partials[rowInGroup][thread], partials[rowInGroup][thread + distance]);
+        }
+        barrier();
+    }
+    largest = partials[rowInGroup][0];
+    barrier();
+
+    float total = 0.0;
+    if (rowExists) {
+        for (uint key = thread; key <= query; key += threadsPerRow) {
+            total += exp(scores[rowStart + key] - largest);
+        }
+    }
+    partials[rowInGroup][thread] = total;
+    barrier();
+    for (uint distance = threadsPerRow / 2u; distance > 0u; distance /= 2u) {
+        if (thread < distance) {
+            partials[rowInGroup][thread] += partials[rowInGroup][thread + distance];
+        }
+        barrier();
+    }
+    total = partials[rowInGroup][0];
+
+    if (!rowExists) {
+        return;
+    }
+    for (uint key = thread; key < settings.sequenceLength; key += threadsPerRow) {
+        if (key <= query) {
+            scores[rowStart + key] = exp(scores[rowStart + key] - largest) / total;
+        } else {
+            scores[rowStart + key] = 0.0;
+        }
+    }
+}

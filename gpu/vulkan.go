@@ -33,6 +33,7 @@ const (
 	vkStructureTypeCommandBufferAllocateInfo     = 40
 	vkStructureTypeCommandBufferBeginInfo        = 42
 	vkStructureTypeMemoryBarrier                 = 46
+	vkStructureTypeQueryPoolCreateInfo           = 11
 
 	vkApiVersion1_0 = 1 << 22
 
@@ -65,6 +66,11 @@ const (
 
 	vkPipelineStageTransferBit      = 0x1000
 	vkPipelineStageComputeShaderBit = 0x800
+	vkPipelineStageBottomOfPipeBit  = 0x2000
+	vkPipelineStageTopOfPipeBit     = 0x1
+	vkQueryTypeTimestamp            = 2
+	vkQueryResult64Bit              = 0x1
+	vkQueryResultWaitBit            = 0x2
 	vkPipelineStageHostBit          = 0x4000
 
 	vkAccessShaderReadBit    = 0x20
@@ -136,6 +142,8 @@ const (
 	limitsMaxComputeSharedMemorySizeOffset     = 216
 	limitsMaxComputeWorkGroupCountOffset       = 220
 	limitsMaxComputeWorkGroupInvocationsOffset = 232
+	limitsTimestampComputeAndGraphicsOffset    = 420
+	limitsTimestampPeriodOffset                = 424
 )
 
 type vkPhysicalDeviceProperties struct {
@@ -405,6 +413,13 @@ var (
 	vkCmdPushConstants                       func(commandBuffer uintptr, layout uint64, stageFlags uint32, offset uint32, size uint32, values unsafe.Pointer)
 	vkCmdDispatch                            func(commandBuffer uintptr, groupCountX uint32, groupCountY uint32, groupCountZ uint32)
 	vkCmdCopyBuffer                          func(commandBuffer uintptr, sourceBuffer uint64, destinationBuffer uint64, regionCount uint32, regions unsafe.Pointer)
+	vkCmdFillBuffer                          func(commandBuffer uintptr, buffer uint64, offset uint64, size uint64, data uint32)
+	vkResetDescriptorPool                    func(device uintptr, pool uint64, flags uint32) int32
+	vkCreateQueryPool                        func(device uintptr, createInfo unsafe.Pointer, allocator unsafe.Pointer, pool *uint64) int32
+	vkDestroyQueryPool                       func(device uintptr, pool uint64, allocator unsafe.Pointer)
+	vkCmdResetQueryPool                      func(commandBuffer uintptr, pool uint64, firstQuery uint32, queryCount uint32)
+	vkCmdWriteTimestamp                      func(commandBuffer uintptr, pipelineStage uint32, pool uint64, query uint32)
+	vkGetQueryPoolResults                    func(device uintptr, pool uint64, firstQuery uint32, queryCount uint32, dataSize uintptr, data unsafe.Pointer, stride uint64, flags uint32) int32
 	vkCmdPipelineBarrier                     func(commandBuffer uintptr, sourceStageMask uint32, destinationStageMask uint32, dependencyFlags uint32, memoryBarrierCount uint32, memoryBarriers unsafe.Pointer, bufferBarrierCount uint32, bufferBarriers unsafe.Pointer, imageBarrierCount uint32, imageBarriers unsafe.Pointer)
 	vkQueueSubmit                            func(queue uintptr, submitCount uint32, submits unsafe.Pointer, fence uint64) int32
 	vkCreateFence                            func(device uintptr, createInfo unsafe.Pointer, allocator unsafe.Pointer, fence *uint64) int32
@@ -479,6 +494,13 @@ func loadVulkanFunctions() error {
 		"vkCmdPushConstants":                       &vkCmdPushConstants,
 		"vkCmdDispatch":                            &vkCmdDispatch,
 		"vkCmdCopyBuffer":                          &vkCmdCopyBuffer,
+		"vkCmdFillBuffer":                          &vkCmdFillBuffer,
+		"vkResetDescriptorPool":                    &vkResetDescriptorPool,
+		"vkCreateQueryPool":                        &vkCreateQueryPool,
+		"vkDestroyQueryPool":                       &vkDestroyQueryPool,
+		"vkCmdResetQueryPool":                      &vkCmdResetQueryPool,
+		"vkCmdWriteTimestamp":                      &vkCmdWriteTimestamp,
+		"vkGetQueryPoolResults":                    &vkGetQueryPoolResults,
 		"vkCmdPipelineBarrier":                     &vkCmdPipelineBarrier,
 		"vkQueueSubmit":                            &vkQueueSubmit,
 		"vkCreateFence":                            &vkCreateFence,
@@ -516,4 +538,13 @@ func checkResult(functionName string, result int32) error {
 		return fmt.Errorf("%s failed with Vulkan error %d", functionName, result)
 	}
 	return nil
+}
+
+type vkQueryPoolCreateInfo struct {
+	structureType      uint32
+	next               unsafe.Pointer
+	flags              uint32
+	queryType          uint32
+	queryCount         uint32
+	pipelineStatistics uint32
 }

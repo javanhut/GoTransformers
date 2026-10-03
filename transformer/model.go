@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"transformer/activationfunction"
 	"transformer/attention"
+	"transformer/dropout"
 	"transformer/embedding"
 	"transformer/feedforward"
 	"transformer/hyperconnection"
@@ -48,8 +49,10 @@ func NewModel(settings Settings) (*Model, error) {
 	for blockIndex := 0; blockIndex < settings.NumberOfBlocks; blockIndex++ {
 		name := fmt.Sprintf("block%d", blockIndex+1)
 		block := &Block{
-			AttentionNorm:   normalization.NewRMSNorm(name+".attentionNorm", settings.VectorSize),
-			FeedForwardNorm: normalization.NewRMSNorm(name+".feedForwardNorm", settings.VectorSize),
+			AttentionNorm:      normalization.NewRMSNorm(name+".attentionNorm", settings.VectorSize),
+			FeedForwardNorm:    normalization.NewRMSNorm(name+".feedForwardNorm", settings.VectorSize),
+			AttentionDropout:   dropout.New(settings.ResidualDropout),
+			FeedForwardDropout: dropout.New(settings.ResidualDropout),
 		}
 
 		kind := settings.attentionKindFor(blockIndex)
@@ -86,6 +89,10 @@ func NewModel(settings Settings) (*Model, error) {
 	}
 	if settings.WeightPrecision != lowprecision.Float64 {
 		model.CompressWeights(settings.WeightPrecision)
+	}
+	if settings.AdapterRank > 0 {
+		model.Settings.AdapterRank = 0
+		model.AddLowRankAdapters(settings.AdapterRank, settings.AdapterAlpha)
 	}
 	return model, nil
 }

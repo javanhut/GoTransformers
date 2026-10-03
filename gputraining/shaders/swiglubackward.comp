@@ -1,0 +1,55 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer GateBuffer {
+    float gateValues[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer UpBuffer {
+    float upValues[];
+};
+
+layout(std430, set = 0, binding = 2) readonly buffer HiddenGradientBuffer {
+    float hiddenGradients[];
+};
+
+layout(std430, set = 0, binding = 3) writeonly buffer GateGradientBuffer {
+    float gateGradients[];
+};
+
+layout(std430, set = 0, binding = 4) writeonly buffer UpGradientBuffer {
+    float upGradients[];
+};
+
+layout(push_constant) uniform Settings {
+    uint count;
+    float limit;
+} settings;
+
+void main() {
+    uint index = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 256u + gl_LocalInvocationID.x;
+    if (index >= settings.count) {
+        return;
+    }
+    float gate = gateValues[index];
+    float up = upValues[index];
+    float gateSlope = 1.0;
+    float upSlope = 1.0;
+    if (settings.limit > 0.0) {
+        if (gate > settings.limit) {
+            gate = settings.limit;
+            gateSlope = 0.0;
+        }
+        if (up > settings.limit || up < -settings.limit) {
+            up = clamp(up, -settings.limit, settings.limit);
+            upSlope = 0.0;
+        }
+    }
+    float sigmoid = 1.0 / (1.0 + exp(-gate));
+    float silu = gate * sigmoid;
+    float siluDerivative = sigmoid + gate * sigmoid * (1.0 - sigmoid);
+    float hiddenGradient = hiddenGradients[index];
+    gateGradients[index] = hiddenGradient * up * siluDerivative * gateSlope;
+    upGradients[index] = hiddenGradient * silu * upSlope;
+}

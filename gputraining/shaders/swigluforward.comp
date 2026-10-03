@@ -1,0 +1,38 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer GateBuffer {
+    float gateValues[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer UpBuffer {
+    float upValues[];
+};
+
+layout(std430, set = 0, binding = 2) writeonly buffer HiddenBuffer {
+    float hiddenValues[];
+};
+
+layout(push_constant) uniform Settings {
+    uint count;
+    float limit;
+} settings;
+
+float silu(float value) {
+    return value / (1.0 + exp(-value));
+}
+
+void main() {
+    uint index = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 256u + gl_LocalInvocationID.x;
+    if (index >= settings.count) {
+        return;
+    }
+    float gate = gateValues[index];
+    float up = upValues[index];
+    if (settings.limit > 0.0) {
+        gate = min(gate, settings.limit);
+        up = clamp(up, -settings.limit, settings.limit);
+    }
+    hiddenValues[index] = silu(gate) * up;
+}

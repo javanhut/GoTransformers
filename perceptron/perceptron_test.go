@@ -2,8 +2,11 @@ package perceptron
 
 import (
 	"math"
+	"reflect"
 	"testing"
 	"transformer/activationfunction"
+	"transformer/dropout"
+	"transformer/gradientcheck"
 	"transformer/lossfunction"
 	"transformer/lowprecision"
 	"transformer/optimizer"
@@ -187,5 +190,87 @@ func TestCompressedLayerMatchesWithinPrecision(t *testing.T) {
 		}
 		expectPanic(t, "Backward on a compressed layer", func() { layer.Backward(vectormath.NewMatrix(3, 32)) })
 		expectPanic(t, "optimizing a compressed layer", func() { optimizer.NewSGD(0.1).Update(layer.Parameters()) })
+	}
+}
+
+func trainableOnly(parameters []parameter.Parameter) []parameter.Parameter {
+	var trainable []parameter.Parameter
+	for _, current := range parameters {
+		if !current.ReadOnly {
+			trainable = append(trainable, current)
+		}
+	}
+	return trainable
+}
+
+func layerWithTrainedAdapter(precision lowprecision.Precision) *Layer {
+	layer := NewLayer("layer", 6, 5, activationfunction.Tanh)
+	if precision != lowprecision.Float64 {
+		layer.CompressWeights(precision)
+	}
+	layer.AddLowRankAdapter(2, 4)
+	for i := range layer.Adapter.Up.Values {
+		layer.Adapter.Up.Values[i] = vectormath.RandomNumberBetween(-0.5, 0.5)
+	}
+	return layer
+}
+
+func TestLowRankAdapterGradients(t *testing.T) {
+	for _, precision := range []lowprecision.Precision{lowprecision.Float64, lowprecision.Int8} {
+		layer := layerWithTrainedAdapter(precision)
+		inputs := vectormath.NewRandomMatrix(3, 6, -1, 1)
+		for _, problem := range gradientcheck.Compare(layer.Forward, layer.Backward, trainableOnly(layer.Parameters()), inputs) {
+			t.Errorf("%v base weights: %s", precision, problem)
+		}
+	}
+}
+
+func TestLowRankAdapterLeavesBaseAlone(t *testing.T) {
+	layer := NewLayer("layer", 6, 5, activationfunction.Tanh)
+	inputs := vectormath.NewRandomMatrix(3, 6, -1, 1)
+	before := layer.Forward(inputs)
+	layer.AddLowRankAdapter(2, 4)
+	after := layer.Forward(inputs)
+	if !reflect.DeepEqual(before.Values, after.Values) {
+		t.Error("a new adapter should not change the output, because Up starts at zero")
+	}
+	layer.Backward(vectormath.NewRandomMatrix(3, 5, -1, 1))
+	if layer.WeightGradients != nil || layer.BiasGradients != nil {
+		t.Error("frozen base weights should not get gradient memory")
+	}
+	if len(layer.Adapter.UpGradients) != 10 || len(layer.Adapter.DownGradients) != 12 {
+		t.Errorf("adapter gradients have %d and %d values", len(layer.Adapter.UpGradients), len(layer.Adapter.DownGradients))
+	}
+	if trainable := trainableOnly(layer.Parameters()); len(trainable) != 2 {
+		t.Errorf("only the 2 adapter matrices should be trainable, got %d parameters", len(trainable))
+	}
+}
+
+func TestMergingAnAdapterKeepsTheOutput(t *testing.T) {
+	layer := layerWithTrainedAdapter(lowprecision.Float64)
+	inputs := vectormath.NewRandomMatrix(3, 6, -1, 1)
+	withAdapter := layer.Forward(inputs)
+	layer.MergeLowRankAdapter()
+	merged := layer.Forward(inputs)
+	for i := range withAdapter.Values {
+		if math.Abs(withAdapter.Values[i]-merged.Values[i]) > 1e-12 {
+			t.Fatalf("value %d: with adapter %v, merged %v", i, withAdapter.Values[i], merged.Values[i])
+		}
+	}
+	if layer.Adapter != nil || layer.FreezeBase {
+		t.Error("merging should remove the adapter and unfreeze the base")
+	}
+	expectPanic(t, "merging into compressed weights", func() { layerWithTrainedAdapter(lowprecision.Int8).MergeLowRankAdapter() })
+}
+
+func TestAdapterDropoutGradients(t *testing.T) {
+	layer := layerWithTrainedAdapter(lowprecision.Float64)
+	layer.Adapter.InputDropout = dropout.New(0.4)
+	layer.Adapter.InputDropout.SetActive(true)
+	inputs := vectormath.NewRandomMatrix(3, 6, -1, 1)
+	layer.Forward(inputs)
+	layer.Adapter.InputDropout.RepeatLastMasks = true
+	for _, problem := range gradientcheck.Compare(layer.Forward, layer.Backward, trainableOnly(layer.Parameters()), inputs) {
+		t.Error(problem)
 	}
 }

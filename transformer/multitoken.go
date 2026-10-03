@@ -3,6 +3,7 @@ package transformer
 import (
 	"transformer/activationfunction"
 	"transformer/attention"
+	"transformer/dropout"
 	"transformer/embedding"
 	"transformer/feedforward"
 	"transformer/normalization"
@@ -29,6 +30,9 @@ func newMultiTokenPredictor(settings Settings, tokenEmbedding *embedding.Embeddi
 		Attention:       attention.NewSelfAttentionWithOptions(name+".block.attention", settings.VectorSize, settings.standardOptions()),
 		FeedForwardNorm: normalization.NewRMSNorm(name+".block.feedForwardNorm", settings.VectorSize),
 		FeedForward:     gatedFeedForwardLayer{inner: feedforward.NewSwiGLU(name+".block.feedForward", settings.VectorSize, settings.FeedForwardSize)},
+
+		AttentionDropout:   dropout.New(settings.ResidualDropout),
+		FeedForwardDropout: dropout.New(settings.ResidualDropout),
 	}
 	return &MultiTokenPredictor{
 		HiddenNorm:     normalization.NewRMSNorm(name+".hiddenNorm", settings.VectorSize),
