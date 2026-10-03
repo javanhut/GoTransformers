@@ -474,6 +474,22 @@ Chat templates and multi-turn conversations for instruct models.
 
 Templates other than ChatML and Llama 3 (for example Mistral's `[INST]`) are refused with an error.
 
+Training data:
+
+| Name | What it does |
+|---|---|
+| `ReadConversations(path)` | reads a `.jsonl` file of conversations, one per line |
+| `ConversationFromJSON(record)` | one line: `{"messages": [{"role", "content"}, ...]}`, ShareGPT's `{"conversations": [{"from", "value"}, ...]}` (`human` and `gpt` become `user` and `assistant`), or any pair format `datafile.JSONRecord.Pair` knows, which becomes one user message and one reply |
+| `ConversationFromPair(pair)` | a `datafile.Pair` as a user message and an assistant reply |
+| `ExamplesFromConversation(messages, template, tokenizer)` | one `transformer.Example` per assistant message: the prompt is the formatted conversation up to that reply (ending with the assistant header), the answer is the reply plus the end-of-turn token. Only the replies count toward the loss, and the model learns to end its turn |
+| `ExamplesFromConversations(conversations, template, tokenizer)` | the same for many |
+
+```go
+conversations, err := chat.ReadConversations("train.jsonl")
+examples, err := chat.ExamplesFromConversations(conversations, template, textTokenizer)
+model.TrainOnExamples(examples, adamW)
+```
+
 ---
 
 ## tokenizer
@@ -536,8 +552,22 @@ Supports `model_type` `llama` and `qwen2`, single or sharded safetensors, and ti
 | `ReadCSV(path, hasHeader)`, `ReadTSV`, `ReadSeparated(path, separator, hasHeader)` | a `Table{ColumnNames, Rows}` |
 | `table.Column(name)`, `ColumnAsNumbers(name)`, `ColumnsAsMatrix(names)`, `ColumnsExcept(names)`, `ColumnIndex`, `NumberOfRows` | |
 | `OneHot(labels)` | 0/1 matrix plus the sorted class names |
-| `ReadPairs(path, inputColumn, targetColumn)`, `table.Pairs(...)` | question/answer pairs |
+| `ReadPairs(path, inputColumn, targetColumn)`, `table.Pairs(...)` | question/answer pairs from CSV, TSV or `.jsonl` |
 | `ReadText(path)`, `ReadLines(path)` | |
+| `ReadTrainingText(path, textField)` | a `.jsonl` / `.ndjson` file's text fields joined by blank lines; any other file as plain text |
+
+JSONL (one JSON object per line):
+
+| Function or method | What it does |
+|---|---|
+| `ForEachJSONLRecord(path, handle)` | reads one line at a time and calls `handle(lineNumber, record)`, so the whole file never has to fit in memory |
+| `ReadJSONL(path)` | every line as a `JSONRecord` (a `map[string]any`) |
+| `ReadJSONLTexts(path, field)` | one text field from every line, for example `{"text": ...}` |
+| `ReadJSONLPairs(path, inputField, targetField)` | pairs, see below |
+| `record.Text(field)`, `record.HasTextFields(fields...)`, `record.FieldNames()` | |
+| `record.Pair(inputField, targetField)` | uses the named fields when the line has them, otherwise recognises `instruction`/`input`/`output` (Alpaca, the `input` is added after the instruction), `prompt`/`completion`, `question`/`answer`, `input`/`target` and `input`/`output` |
+
+Blank lines and Windows line endings are fine, lines can be any length, and errors name the file and line number, plus the fields a line does have when one is missing.
 
 ---
 

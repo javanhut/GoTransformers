@@ -19,7 +19,7 @@ The Go module is named `transformer`, so packages are imported as `transformer/a
 | Model parts | RMSNorm, LayerNorm, SwiGLU / GeGLU / ReGLU (with optional clamping), mixture-of-experts, mHC residual streams, multi-token prediction |
 | Training | SGD, momentum, Adam, AdamW, Muon; batches; dropout; answer-only fine-tuning; freezing layers; LoRA adapters (also over compressed Int8/FP4 weights); checkpoints that resume exactly |
 | Running models | Generation with a cache, top-p sampling, chat templates and multi-turn conversations, cache saved to disk, answer scoring, "I don't know" when confidence is low, weights compressed to Float32, Int8 or FP4 |
-| Files | Byte-level BPE tokenizer (train your own or load Hugging Face `tokenizer.json`), safetensors, Llama and Qwen 2 models from Hugging Face, CSV/TSV/text data, weight files |
+| Files | Byte-level BPE tokenizer (train your own or load Hugging Face `tokenizer.json`), safetensors, Llama and Qwen 2 models from Hugging Face, CSV/TSV/JSONL/text data (including chat datasets in `messages`, ShareGPT, Alpaca and prompt/completion form), weight files |
 | Hardware | Multi-threaded CPU math, Vulkan GPU backend with an optional weight cache, float32 training entirely on the GPU (about 26× faster than the CPU on an integrated GPU) |
 
 ## Getting started
@@ -108,6 +108,16 @@ answer := model.Answer(questionIDs, transformer.GenerationOptions{
 	AbstainTokenIDs:  textTokenizer.Encode("I don't know"),
 })
 ```
+
+Fine-tune an instruct model on a JSONL chat dataset (one `{"messages": [...]}` per line). Only the assistant's replies are learned:
+
+```go
+conversations, err := chat.ReadConversations("train.jsonl")
+examples, err := chat.ExamplesFromConversations(conversations, template, modelTokenizer)
+model.TrainOnExamples(examples, adamW)
+```
+
+Every example program that reads data takes `.jsonl` too: `-text data.jsonl` (with `-field` for the text field, default `text`) for `tinylanguagemodel` and `gputrain`, and `-pairs data.jsonl` for `finetune` and `lora`.
 
 Load an open model with compressed weights:
 

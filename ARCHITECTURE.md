@@ -40,11 +40,11 @@ Each package only imports packages from the layers above it.
 
 5. outside world
    tokenizer            byte-level BPE, Hugging Face tokenizer.json
-   chat                 chat templates (ChatML, Llama 3) and multi-turn conversations
+   chat                 chat templates (ChatML, Llama 3), multi-turn conversations, conversation datasets
    safetensors          read and write safetensors files
    pretrained           load Llama and Qwen 2 models from Hugging Face folders
    weightfile           save and load named weights as text or binary
-   datafile             CSV, TSV, text, question/answer pairs
+   datafile             CSV, TSV, JSONL, text, question/answer pairs
    gpu                  Vulkan backend for vectormath, and general GPU buffers, programs and recorders
    gputraining          float32 training of standard models entirely on the GPU
 ```
@@ -188,6 +188,8 @@ Both run the same steps:
 
 The loss counts only the positions predicting answer tokens, which is how answer-only fine-tuning works; plain text counts every position.
 
+**Chat datasets.** `chat.ExamplesFromConversations` turns each assistant reply into one example. The prompt is `template.Format(messagesBeforeTheReply, true)`, the same text `Conversation.Reply` feeds the model, so training and chatting see identical tokens. A test checks that prompt + answer tokens equal the tokens of the whole formatted conversation. The answer ends with the end-of-turn token, which is what teaches the model to stop. A conversation with several replies gives several examples, each with the whole history before its reply as the prompt.
+
 **Freezing saves work.** Before each step, layers whose weights are all frozen get `FreezeBase`. Their backward pass still passes gradients down to earlier layers, but skips computing and storing their own weight gradients. A frozen embedding table skips its backward pass entirely.
 
 **Dropout.** Three settings: `ResidualDropout` (each block's attention and feed-forward outputs, before they're added back), `AttentionDropout` (the attention weights, inside both attention types) and `AdapterDropout` (LoRA inputs).
@@ -231,6 +233,7 @@ On the Intel Meteor Lake integrated GPU, a 6.9M-parameter model trains at about 
 | tokenizer | `tokenizer.SaveToFile` | text, format tag `gotransformers-tokenizer-1` |
 | vocabulary | `Vocabulary.SaveToFile` | one quoted token per line |
 | `*.safetensors` | `safetensors.Write` | the standard safetensors layout (F32 or F64 out; F64, F32, F16 and BF16 in) |
+| `*.jsonl`, `*.ndjson` | read only (`datafile`, `chat`) | one JSON object per line: `{"text"}`, pairs (`prompt`/`completion`, `instruction`/`input`/`output`, `question`/`answer`, `input`/`target`) or conversations (`messages`, ShareGPT `conversations`) |
 
 ## Testing
 
