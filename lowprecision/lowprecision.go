@@ -87,13 +87,13 @@ func encodeFP4(value float64, scale float64) byte {
 	}
 	scaled := math.Abs(value) / scale
 	closestIndex := 0
-	for index, magnitude := range fp4Magnitudes {
-		if math.Abs(scaled-magnitude) < math.Abs(scaled-fp4Magnitudes[closestIndex]) {
-			closestIndex = index
-		}
+	for closestIndex < len(fp4HalfwayPoints) && scaled > fp4HalfwayPoints[closestIndex] {
+		closestIndex++
 	}
 	return signBit | byte(closestIndex)
 }
+
+var fp4HalfwayPoints = [7]float64{0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5}
 
 func decodeFP4(code byte, scale float64) float64 {
 	value := fp4Magnitudes[code&7] * scale

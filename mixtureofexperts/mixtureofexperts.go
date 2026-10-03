@@ -322,3 +322,14 @@ func (mixture *MixtureOfExperts) Parameters() []parameter.Parameter {
 	}
 	return parameters
 }
+
+func (mixture *MixtureOfExperts) Layers() []*perceptron.Layer {
+	var layers []*perceptron.Layer
+	for _, expert := range mixture.SharedExperts {
+		layers = append(layers, expert.Layers()...)
+	}
+	for _, expert := range mixture.RoutedExperts {
+		layers = append(layers, expert.Layers()...)
+	}
+	return append(layers, mixture.RouterLayer)
+}

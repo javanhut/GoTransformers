@@ -4,17 +4,19 @@ import (
 	"fmt"
 	"math"
 	"transformer/activationfunction"
+	"transformer/lowprecision"
 	"transformer/parameter"
 	"transformer/vectormath"
 )
 
 type Layer struct {
-	Name            string
-	Weights         vectormath.Matrix
-	Biases          vectormath.Vector
-	Activation      activationfunction.Activation
-	WeightGradients vectormath.Matrix
-	BiasGradients   vectormath.Vector
+	Name              string
+	Weights           vectormath.Matrix
+	Biases            vectormath.Vector
+	Activation        activationfunction.Activation
+	WeightGradients   []float64
+	BiasGradients     []float64
+	CompressedWeights *lowprecision.Rows
 
 	lastInputs         vectormath.Matrix
 	lastPreActivations vectormath.Matrix
@@ -26,12 +28,10 @@ func NewLayer(name string, numberOfInputs int, numberOfOutputs int, activation a
 	}
 	limit := math.Sqrt(6 / float64(numberOfInputs+numberOfOutputs))
 	return &Layer{
-		Name:            name,
-		Weights:         vectormath.NewRandomMatrix(numberOfOutputs, numberOfInputs, -limit, limit),
-		Biases:          vectormath.NewVector(numberOfOutputs),
-		Activation:      activation,
-		WeightGradients: vectormath.NewMatrix(numberOfOutputs, numberOfInputs),
-		BiasGradients:   vectormath.NewVector(numberOfOutputs),
+		Name:       name,
+		Weights:    vectormath.NewRandomMatrix(numberOfOutputs, numberOfInputs, -limit, limit),
+		Biases:     vectormath.NewVector(numberOfOutputs),
+		Activation: activation,
 	}
 }
 
@@ -43,6 +43,41 @@ func (layer *Layer) NumberOfOutputs() int {
 	return layer.Weights.Rows
 }
 
+func (layer *Layer) IsCompressed() bool {
+	return layer.CompressedWeights != nil
+}
+
+func (layer *Layer) CompressWeights(precision lowprecision.Precision) {
+	if layer.IsCompressed() {
+		panic(fmt.Sprintf("layer %q: weights are already compressed", layer.Name))
+	}
+	layer.CompressedWeights = lowprecision.RowsFromMatrix(layer.Weights, precision)
+	layer.Weights = vectormath.Matrix{Rows: layer.Weights.Rows, Columns: layer.Weights.Columns}
+	layer.WeightGradients = nil
+	layer.BiasGradients = nil
+	vectormath.MarkWeightsChanged()
+}
+
+func (layer *Layer) DecompressWeights() {
+	if !layer.IsCompressed() {
+		return
+	}
+	weights := vectormath.NewMatrix(layer.Weights.Rows, layer.Weights.Columns)
+	for neuron := 0; neuron < weights.Rows; neuron++ {
+		weights.SetRow(neuron, layer.CompressedWeights.Row(neuron))
+	}
+	layer.Weights = weights
+	layer.CompressedWeights = nil
+	vectormath.MarkWeightsChanged()
+}
+
+func (layer *Layer) WeightBytes() int {
+	if layer.IsCompressed() {
+		return layer.CompressedWeights.BytesUsed() + len(layer.Biases)*8
+	}
+	return (len(layer.Weights.Values) + len(layer.Biases)) * 8
+}
+
 func (layer *Layer) checkSetUp() {
 	if layer.Activation.Forward == nil || layer.Activation.Derivative == nil {
 		panic(fmt.Sprintf("layer %q: Activation is not set", layer.Name))
@@ -50,9 +85,35 @@ func (layer *Layer) checkSetUp() {
 	if len(layer.Biases) != layer.NumberOfOutputs() {
 		panic(fmt.Sprintf("layer %q: has %d neurons in Weights but %d Biases", layer.Name, layer.NumberOfOutputs(), len(layer.Biases)))
 	}
-	if layer.WeightGradients.Rows != layer.Weights.Rows || layer.WeightGradients.Columns != layer.Weights.Columns || len(layer.BiasGradients) != len(layer.Biases) {
-		panic(fmt.Sprintf("layer %q: gradient storage doesn't match the weights, make layers with NewLayer", layer.Name))
+	if !layer.IsCompressed() && len(layer.Weights.Values) != layer.Weights.Rows*layer.Weights.Columns {
+		panic(fmt.Sprintf("layer %q: Weights are %dx%d but hold %d values", layer.Name, layer.Weights.Rows, layer.Weights.Columns, len(layer.Weights.Values)))
 	}
+}
+
+func (layer *Layer) makeGradients() {
+	if len(layer.WeightGradients) != layer.Weights.Rows*layer.Weights.Columns {
+		layer.WeightGradients = make([]float64, layer.Weights.Rows*layer.Weights.Columns)
+	}
+	if len(layer.BiasGradients) != len(layer.Biases) {
+		layer.BiasGradients = make([]float64, len(layer.Biases))
+	}
+}
+
+func (layer *Layer) ReleaseGradients() {
+	layer.WeightGradients = nil
+	layer.BiasGradients = nil
+}
+
+func (layer *Layer) multiplyByCompressedWeights(inputs vectormath.Matrix) vectormath.Matrix {
+	preActivations := vectormath.NewMatrix(inputs.Rows, layer.NumberOfOutputs())
+	vectormath.SplitAcrossThreads(layer.NumberOfOutputs(), inputs.Rows*inputs.Columns, func(firstNeuron int, lastNeuron int) {
+		for neuron := firstNeuron; neuron < lastNeuron; neuron++ {
+			for example := 0; example < inputs.Rows; example++ {
+				preActivations.Set(example, neuron, layer.CompressedWeights.DotRow(neuron, inputs.Row(example)))
+			}
+		}
+	})
+	return preActivations
 }
 
 func (layer *Layer) Forward(inputs vectormath.Matrix) vectormath.Matrix {
@@ -61,7 +122,12 @@ func (layer *Layer) Forward(inputs vectormath.Matrix) vectormath.Matrix {
 		panic(fmt.Sprintf("layer %q: each input row has %d values but the layer takes %d inputs", layer.Name, inputs.Columns, layer.NumberOfInputs()))
 	}
 
-	preActivations := vectormath.MatrixTimesTransposedWeights(inputs, layer.Weights)
+	var preActivations vectormath.Matrix
+	if layer.IsCompressed() {
+		preActivations = layer.multiplyByCompressedWeights(inputs)
+	} else {
+		preActivations = vectormath.MatrixTimesTransposedWeights(inputs, layer.Weights)
+	}
 	outputs := vectormath.NewMatrix(inputs.Rows, layer.NumberOfOutputs())
 	for example := 0; example < inputs.Rows; example++ {
 		examplePreActivations := preActivations.Row(example)
@@ -78,12 +144,16 @@ func (layer *Layer) Forward(inputs vectormath.Matrix) vectormath.Matrix {
 }
 
 func (layer *Layer) Backward(outputGradients vectormath.Matrix) vectormath.Matrix {
+	if layer.IsCompressed() {
+		panic(fmt.Sprintf("layer %q: weights are compressed for running the model, call DecompressWeights before training", layer.Name))
+	}
 	if layer.lastPreActivations.Values == nil {
 		panic(fmt.Sprintf("layer %q: call Forward before Backward", layer.Name))
 	}
 	if outputGradients.Rows != layer.lastPreActivations.Rows || outputGradients.Columns != layer.NumberOfOutputs() {
 		panic(fmt.Sprintf("layer %q: output gradients are %dx%d but the last Forward produced %dx%d", layer.Name, outputGradients.Rows, outputGradients.Columns, layer.lastPreActivations.Rows, layer.lastPreActivations.Columns))
 	}
+	layer.makeGradients()
 
 	preActivationGradients := vectormath.NewMatrix(outputGradients.Rows, outputGradients.Columns)
 	for example := 0; example < outputGradients.Rows; example++ {
@@ -97,15 +167,43 @@ func (layer *Layer) Backward(outputGradients vectormath.Matrix) vectormath.Matri
 
 	weightGradients := vectormath.TransposedTimesMatrix(preActivationGradients, layer.lastInputs)
 	for i := range weightGradients.Values {
-		layer.WeightGradients.Values[i] += weightGradients.Values[i]
+		layer.WeightGradients[i] += weightGradients.Values[i]
 	}
 
 	return vectormath.MatrixTimesWeights(preActivationGradients, layer.Weights)
 }
 
 func (layer *Layer) Parameters() []parameter.Parameter {
-	return []parameter.Parameter{
-		{Name: layer.Name + ".weights", Values: layer.Weights.Values, Gradients: layer.WeightGradients.Values, Rows: layer.Weights.Rows, Columns: layer.Weights.Columns},
-		{Name: layer.Name + ".biases", Values: layer.Biases, Gradients: layer.BiasGradients},
+	if layer.IsCompressed() {
+		return []parameter.Parameter{
+			{Name: layer.Name + ".weights", Rows: layer.Weights.Rows, Columns: layer.Weights.Columns, ReadOnly: true},
+			{Name: layer.Name + ".biases", Values: layer.Biases, ReadOnly: true},
+		}
 	}
+	return []parameter.Parameter{
+		{Name: layer.Name + ".weights", Values: layer.Weights.Values, GradientStorage: &layer.WeightGradients, Rows: layer.Weights.Rows, Columns: layer.Weights.Columns},
+		{Name: layer.Name + ".biases", Values: layer.Biases, GradientStorage: &layer.BiasGradients},
+	}
+}
+
+func (layer *Layer) SetWeights(values []float64) error {
+	if len(values) != layer.Weights.Rows*layer.Weights.Columns {
+		return fmt.Errorf("layer %q: got %d weight values but it holds %dx%d", layer.Name, len(values), layer.Weights.Rows, layer.Weights.Columns)
+	}
+	if layer.IsCompressed() {
+		newWeights := vectormath.Matrix{Rows: layer.Weights.Rows, Columns: layer.Weights.Columns, Values: values}
+		layer.CompressedWeights = lowprecision.RowsFromMatrix(newWeights, layer.CompressedWeights.Precision)
+	} else {
+		copy(layer.Weights.Values, values)
+	}
+	vectormath.MarkWeightsChanged()
+	return nil
+}
+
+func (layer *Layer) SetBiases(values []float64) error {
+	if len(values) != len(layer.Biases) {
+		return fmt.Errorf("layer %q: got %d bias values but it holds %d", layer.Name, len(values), len(layer.Biases))
+	}
+	copy(layer.Biases, values)
+	return nil
 }

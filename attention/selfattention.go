@@ -94,7 +94,7 @@ type SelfAttention struct {
 	ValueLayer         *perceptron.Layer
 	OutputLayer        *perceptron.Layer
 	SinkLogits         vectormath.Vector
-	SinkLogitGradients vectormath.Vector
+	SinkLogitGradients []float64
 
 	borrowers []*SelfAttention
 
@@ -604,7 +604,22 @@ func (attention *SelfAttention) Parameters() []parameter.Parameter {
 	}
 	parameters = append(parameters, attention.OutputLayer.Parameters()...)
 	if attention.SinkLogits != nil {
-		parameters = append(parameters, parameter.Parameter{Name: attention.Name + ".sinkLogits", Values: attention.SinkLogits, Gradients: attention.SinkLogitGradients, UseAdamW: true})
+		parameters = append(parameters, parameter.Parameter{Name: attention.Name + ".sinkLogits", Values: attention.SinkLogits, GradientStorage: &attention.SinkLogitGradients, UseAdamW: true})
 	}
 	return parameters
+}
+
+func (attention *SelfAttention) Layers() []*perceptron.Layer {
+	var layers []*perceptron.Layer
+	if attention.QueryDownLayer != nil {
+		layers = append(layers, attention.QueryDownLayer)
+	}
+	layers = append(layers, attention.QueryLayer)
+	if attention.SharingMode == OwnKeysAndValues {
+		layers = append(layers, attention.KeyLayer)
+		if !attention.ShareKeyAsValue {
+			layers = append(layers, attention.ValueLayer)
+		}
+	}
+	return append(layers, attention.OutputLayer)
 }

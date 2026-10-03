@@ -46,7 +46,7 @@ func (muon *Muon) Update(parameters []parameter.Parameter) {
 
 		momentumBuffer := rememberedValuesFor(muon.momentumBuffers, current)
 		lookAhead := vectormath.NewMatrix(current.Rows, current.Columns)
-		for i, gradient := range current.Gradients {
+		for i, gradient := range current.Gradients() {
 			momentumBuffer[i] = muon.Momentum*momentumBuffer[i] + gradient
 			lookAhead.Values[i] = muon.Momentum*momentumBuffer[i] + gradient
 		}

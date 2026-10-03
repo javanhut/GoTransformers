@@ -18,7 +18,7 @@ func (sgd *SGD) Update(parameters []parameter.Parameter) {
 	for _, current := range parameters {
 		checkGradientSize(current)
 		for i := range current.Values {
-			current.Values[i] -= sgd.LearningRate * current.Gradients[i]
+			current.Values[i] -= sgd.LearningRate * current.Gradients()[i]
 		}
 	}
 }
@@ -47,7 +47,7 @@ func (sgd *SGDWithMomentum) Update(parameters []parameter.Parameter) {
 		checkGradientSize(current)
 		velocity := rememberedValuesFor(sgd.velocities, current)
 		for i := range current.Values {
-			velocity[i] = sgd.Momentum*velocity[i] - sgd.LearningRate*current.Gradients[i]
+			velocity[i] = sgd.Momentum*velocity[i] - sgd.LearningRate*current.Gradients()[i]
 			current.Values[i] += velocity[i]
 		}
 	}

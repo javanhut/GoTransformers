@@ -185,8 +185,8 @@ func TestParameterNamesAreUnique(t *testing.T) {
 			t.Errorf("parameter name %q is used twice", current.Name)
 		}
 		seen[current.Name] = true
-		if len(current.Gradients) != len(current.Values) {
-			t.Errorf("%s has %d values but %d gradients", current.Name, len(current.Values), len(current.Gradients))
+		if len(current.Gradients()) != len(current.Values) {
+			t.Errorf("%s has %d values but %d gradients", current.Name, len(current.Values), len(current.Gradients()))
 		}
 	}
 }

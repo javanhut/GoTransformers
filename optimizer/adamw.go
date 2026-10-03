@@ -51,7 +51,7 @@ func (adamW *AdamW) Update(parameters []parameter.Parameter) {
 		}
 
 		for i := range current.Values {
-			gradient := current.Gradients[i]
+			gradient := current.Gradients()[i]
 			averageGradient[i] = adamW.MomentumDecay*averageGradient[i] + (1-adamW.MomentumDecay)*gradient
 			averageSquaredGradient[i] = adamW.SquaredGradientDecay*averageSquaredGradient[i] + (1-adamW.SquaredGradientDecay)*gradient*gradient
 

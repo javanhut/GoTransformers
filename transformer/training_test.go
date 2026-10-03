@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"transformer/lowprecision"
 	"transformer/optimizer"
 	"transformer/parameter"
 	"transformer/vectormath"
@@ -32,8 +33,8 @@ func TestAnswerGradientsMatchFiniteDifference(t *testing.T) {
 				lower := model.AnswerLoss(example)
 				current.Values[i] = original
 				numerical := (higher - lower) / (2 * stepSize)
-				if math.Abs(numerical-current.Gradients[i]) > 1e-5*math.Max(1, math.Abs(numerical)) {
-					t.Errorf("%s: %s[%d]: backward gave %v, finite difference gave %v", name, current.Name, i, current.Gradients[i], numerical)
+				if math.Abs(numerical-current.Gradients()[i]) > 1e-5*math.Max(1, math.Abs(numerical)) {
+					t.Errorf("%s: %s[%d]: backward gave %v, finite difference gave %v", name, current.Name, i, current.Gradients()[i], numerical)
 				}
 			}
 		}
@@ -90,9 +91,9 @@ func TestBatchUsesTheAverageGradient(t *testing.T) {
 		model.ComputeGradients(sequence)
 		for _, current := range parameters {
 			if averageGradients[current.Name] == nil {
-				averageGradients[current.Name] = make([]float64, len(current.Gradients))
+				averageGradients[current.Name] = make([]float64, len(current.Gradients()))
 			}
-			for i, gradient := range current.Gradients {
+			for i, gradient := range current.Gradients() {
 				averageGradients[current.Name][i] += gradient / float64(len(sequences))
 			}
 		}
@@ -204,4 +205,51 @@ func TestFineTuningLearnsAnswersAndBecomesConfident(t *testing.T) {
 			t.Errorf("prompt %v: wanted %v, got %+v", example.PromptIDs, example.AnswerIDs[:2], answer)
 		}
 	}
+}
+
+func TestCompressedModelStillGenerates(t *testing.T) {
+	for name, settings := range testSettings() {
+		model := newModel(t, settings)
+		tokenIDs := []int{1, 5, 2, 9, 3}
+		before := model.Forward(tokenIDs)
+		weightBytesBefore := model.WeightBytes()
+		model.CompressWeights(lowprecision.Float32)
+		after := model.Forward(tokenIDs)
+		for i := range before.Values {
+			if math.Abs(before.Values[i]-after.Values[i]) > 1e-4 {
+				t.Errorf("%s score %d: full precision %v, Float32 weights %v", name, i, before.Values[i], after.Values[i])
+				break
+			}
+		}
+		if model.WeightBytes()*10 > weightBytesBefore*6 {
+			t.Errorf("%s: Float32 weights use %d bytes, Float64 used %d", name, model.WeightBytes(), weightBytesBefore)
+		}
+		model.Generate([]int{1, 2}, 3, 0)
+		if model.GradientBytes() != 0 {
+			t.Errorf("%s: a compressed model should hold no gradient memory, has %d bytes", name, model.GradientBytes())
+		}
+	}
+}
+
+func TestTrainingCreatesGradientsAndReleaseFreesThem(t *testing.T) {
+	model := newModel(t, tinySettings())
+	if model.GradientBytes() != 0 {
+		t.Fatalf("a new model should hold no gradient memory, has %d bytes", model.GradientBytes())
+	}
+	model.TrainStep([]int{1, 2, 3, 4}, optimizer.NewAdam(0.01))
+	if model.GradientBytes() == 0 {
+		t.Fatal("training should create gradient memory")
+	}
+	model.ReleaseGradients()
+	if model.GradientBytes() != 0 {
+		t.Fatalf("ReleaseGradients should free gradient memory, still %d bytes", model.GradientBytes())
+	}
+	model.TrainStep([]int{1, 2, 3, 4}, optimizer.NewAdam(0.01))
+}
+
+func TestDecompressingLetsTrainingContinue(t *testing.T) {
+	model := newModel(t, tinySettings())
+	model.CompressWeights(lowprecision.Int8)
+	model.DecompressWeights()
+	model.TrainStep([]int{1, 2, 3, 4}, optimizer.NewAdam(0.01))
 }

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"transformer/lowprecision"
 	"transformer/parameter"
 	"transformer/safetensors"
 	"transformer/tokenizer"
@@ -129,28 +131,34 @@ func LoadLlamaWeights(model *transformer.Model, config LlamaConfig, folder strin
 				opened.Close()
 				return err
 			}
-			if len(tensor.Values) != len(target.Values) {
+			if len(tensor.Values) != target.Count() {
 				opened.Close()
-				return fmt.Errorf("%s: tensor %q has shape %v (%d values) but %q holds %d values", path, huggingFaceName, tensor.Shape, len(tensor.Values), ourName, len(target.Values))
+				return fmt.Errorf("%s: tensor %q has shape %v (%d values) but %q holds %d values", path, huggingFaceName, tensor.Shape, len(tensor.Values), ourName, target.Count())
 			}
-			if target.IsMatrix() && (len(tensor.Shape) != 2 || tensor.Shape[0] != target.Rows || tensor.Shape[1] != target.Columns) {
+			isMatrix := target.Rows > 1 && target.Columns > 1
+			if isMatrix && (len(tensor.Shape) != 2 || tensor.Shape[0] != target.Rows || tensor.Shape[1] != target.Columns) {
 				opened.Close()
 				return fmt.Errorf("%s: tensor %q has shape %v but %q is %dx%d", path, huggingFaceName, tensor.Shape, ourName, target.Rows, target.Columns)
 			}
-			copy(target.Values, tensor.Values)
+			if err := model.SetWeight(ourName, tensor.Values); err != nil {
+				opened.Close()
+				return err
+			}
 			loaded[ourName] = true
+			if model.Settings.WeightPrecision != lowprecision.Float64 {
+				runtime.GC()
+			}
+			if ourName == "tokens.table" && config.TieWordEmbeddings {
+				if err := model.SetWeight("output.weights", tensor.Values); err != nil {
+					opened.Close()
+					return err
+				}
+				loaded["output.weights"] = true
+			}
 		}
 		opened.Close()
 	}
 
-	if !loaded["output.weights"] {
-		embedding := parameters["tokens.table"]
-		if !loaded["tokens.table"] {
-			return fmt.Errorf("%s: the weights have no model.embed_tokens.weight", folder)
-		}
-		copy(parameters["output.weights"].Values, embedding.Values)
-		loaded["output.weights"] = true
-	}
 	var missing []string
 	for name := range parameters {
 		if !loaded[name] && !strings.HasSuffix(name, ".biases") {
@@ -166,6 +174,10 @@ func LoadLlamaWeights(model *transformer.Model, config LlamaConfig, folder strin
 }
 
 func LoadLlama(folder string) (*transformer.Model, *tokenizer.Tokenizer, error) {
+	return LoadLlamaWithPrecision(folder, lowprecision.Float64)
+}
+
+func LoadLlamaWithPrecision(folder string, precision lowprecision.Precision) (*transformer.Model, *tokenizer.Tokenizer, error) {
 	config, err := ReadLlamaConfig(filepath.Join(folder, "config.json"))
 	if err != nil {
 		return nil, nil, err
@@ -173,7 +185,9 @@ func LoadLlama(folder string) (*transformer.Model, *tokenizer.Tokenizer, error) 
 	if err := config.Check(); err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", folder, err)
 	}
-	model, err := transformer.NewModel(config.Settings())
+	settings := config.Settings()
+	settings.WeightPrecision = precision
+	model, err := transformer.NewModel(settings)
 	if err != nil {
 		return nil, nil, err
 	}

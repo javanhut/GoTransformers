@@ -87,7 +87,7 @@ type CompressedAttention struct {
 	OverlapPositionBiasGradients vectormath.Matrix
 	EntryNorm                    *normalization.RMSNorm
 	SinkLogits                   vectormath.Vector
-	SinkLogitGradients           vectormath.Vector
+	SinkLogitGradients           []float64
 	IndexerQueryLayer            *perceptron.Layer
 	IndexerHeadWeightLayer       *perceptron.Layer
 	IndexerKeyLayer              *perceptron.Layer
@@ -610,15 +610,15 @@ func (compressed *CompressedAttention) Parameters() []parameter.Parameter {
 	parameters = append(parameters, compressed.QueryNorm.Parameters()...)
 	parameters = append(parameters, compressed.EntryLayer.Parameters()...)
 	parameters = append(parameters, compressed.WeightLayer.Parameters()...)
-	parameters = append(parameters, parameter.Parameter{Name: compressed.Name + ".positionBiases", Values: compressed.PositionBiases.Values, Gradients: compressed.PositionBiasGradients.Values, UseAdamW: true})
+	parameters = append(parameters, parameter.Parameter{Name: compressed.Name + ".positionBiases", Values: compressed.PositionBiases.Values, GradientStorage: &compressed.PositionBiasGradients.Values, UseAdamW: true})
 	if compressed.Overlap {
 		parameters = append(parameters, compressed.OverlapEntryLayer.Parameters()...)
 		parameters = append(parameters, compressed.OverlapWeightLayer.Parameters()...)
-		parameters = append(parameters, parameter.Parameter{Name: compressed.Name + ".overlapPositionBiases", Values: compressed.OverlapPositionBiases.Values, Gradients: compressed.OverlapPositionBiasGradients.Values, UseAdamW: true})
+		parameters = append(parameters, parameter.Parameter{Name: compressed.Name + ".overlapPositionBiases", Values: compressed.OverlapPositionBiases.Values, GradientStorage: &compressed.OverlapPositionBiasGradients.Values, UseAdamW: true})
 	}
 	parameters = append(parameters, compressed.EntryNorm.Parameters()...)
 	if compressed.SinkLogits != nil {
-		parameters = append(parameters, parameter.Parameter{Name: compressed.Name + ".sinkLogits", Values: compressed.SinkLogits, Gradients: compressed.SinkLogitGradients, UseAdamW: true})
+		parameters = append(parameters, parameter.Parameter{Name: compressed.Name + ".sinkLogits", Values: compressed.SinkLogits, GradientStorage: &compressed.SinkLogitGradients, UseAdamW: true})
 	}
 	if compressed.TopK > 0 {
 		parameters = append(parameters, compressed.IndexerQueryLayer.Parameters()...)
@@ -627,4 +627,15 @@ func (compressed *CompressedAttention) Parameters() []parameter.Parameter {
 	}
 	parameters = append(parameters, compressed.OutputLayer.Parameters()...)
 	return parameters
+}
+
+func (compressed *CompressedAttention) Layers() []*perceptron.Layer {
+	layers := []*perceptron.Layer{compressed.QueryLayer, compressed.EntryLayer, compressed.WeightLayer}
+	if compressed.Overlap {
+		layers = append(layers, compressed.OverlapEntryLayer, compressed.OverlapWeightLayer)
+	}
+	if compressed.TopK > 0 {
+		layers = append(layers, compressed.IndexerQueryLayer, compressed.IndexerHeadWeightLayer, compressed.IndexerKeyLayer)
+	}
+	return append(layers, compressed.OutputLayer)
 }

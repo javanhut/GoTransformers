@@ -11,8 +11,8 @@ type LayerNorm struct {
 	Name            string
 	Weights         vectormath.Vector
 	Biases          vectormath.Vector
-	WeightGradients vectormath.Vector
-	BiasGradients   vectormath.Vector
+	WeightGradients []float64
+	BiasGradients   []float64
 	Epsilon         float64
 
 	lastNormalized        vectormath.Matrix
@@ -99,7 +99,7 @@ func (norm *LayerNorm) Backward(outputGradients vectormath.Matrix) vectormath.Ma
 
 func (norm *LayerNorm) Parameters() []parameter.Parameter {
 	return []parameter.Parameter{
-		{Name: norm.Name + ".weights", Values: norm.Weights, Gradients: norm.WeightGradients},
-		{Name: norm.Name + ".biases", Values: norm.Biases, Gradients: norm.BiasGradients},
+		{Name: norm.Name + ".weights", Values: norm.Weights, GradientStorage: &norm.WeightGradients},
+		{Name: norm.Name + ".biases", Values: norm.Biases, GradientStorage: &norm.BiasGradients},
 	}
 }

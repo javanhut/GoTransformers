@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"transformer/attention"
+	"transformer/lowprecision"
 )
 
 const generationFileFormat = "gotransformers-generation-1"
@@ -31,9 +32,8 @@ func (model *Model) Fingerprint() uint64 {
 	hash := fnv.New64a()
 	settingsText, _ := json.Marshal(model.Settings)
 	hash.Write(settingsText)
-	for _, current := range model.Parameters() {
-		hash.Write([]byte(current.Name))
-		for _, value := range current.Values {
+	writeNumbers := func(values []float64) {
+		for _, value := range values {
 			bits := math.Float64bits(value)
 			var bytes [8]byte
 			for i := range bytes {
@@ -41,6 +41,32 @@ func (model *Model) Fingerprint() uint64 {
 			}
 			hash.Write(bytes[:])
 		}
+	}
+	for _, current := range model.Parameters() {
+		hash.Write([]byte(current.Name))
+		writeNumbers(current.Values)
+	}
+	writeCompressed := func(rows *lowprecision.Rows) {
+		snapshot := rows.Snapshot()
+		writeNumbers(snapshot.Float64Values)
+		for _, value := range snapshot.Float32Values {
+			writeNumbers([]float64{float64(value)})
+		}
+		for _, value := range snapshot.Scales {
+			writeNumbers([]float64{float64(value)})
+		}
+		for _, value := range snapshot.Int8Values {
+			hash.Write([]byte{byte(value)})
+		}
+		hash.Write(snapshot.FP4Values)
+	}
+	for _, layer := range model.allLayers() {
+		if layer.IsCompressed() {
+			writeCompressed(layer.CompressedWeights)
+		}
+	}
+	if model.TokenEmbedding.IsCompressed() {
+		writeCompressed(model.TokenEmbedding.CompressedTable)
 	}
 	return hash.Sum64()
 }

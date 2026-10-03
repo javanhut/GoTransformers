@@ -201,3 +201,89 @@ func RowsFromSnapshot(snapshot RowsSnapshot) (*Rows, error) {
 	}
 	return rows, nil
 }
+
+var fp4SignedValues = [16]float64{0, 0.5, 1, 1.5, 2, 3, 4, 6, 0, -0.5, -1, -1.5, -2, -3, -4, -6}
+
+func (rows *Rows) DotRow(row int, vector vectormath.Vector) float64 {
+	if row < 0 || row >= rows.numberOfRows {
+		panic(fmt.Sprintf("Rows.DotRow: row %d is outside %d rows", row, rows.numberOfRows))
+	}
+	if len(vector) != rows.Width {
+		panic(fmt.Sprintf("Rows.DotRow: vector has %d values but each row holds %d", len(vector), rows.Width))
+	}
+	sum := 0.0
+	rowStart := row * rows.Width
+	blocksPerRow := numberOfScaleBlocks(rows.Width)
+	switch rows.Precision {
+	case Float64:
+		values := rows.float64Values[rowStart : rowStart+rows.Width]
+		for i, value := range values {
+			sum += vector[i] * value
+		}
+	case Float32:
+		values := rows.float32Values[rowStart : rowStart+rows.Width]
+		for i, value := range values {
+			sum += vector[i] * float64(value)
+		}
+	case Int8:
+		values := rows.int8Values[rowStart : rowStart+rows.Width]
+		for block := 0; block < blocksPerRow; block++ {
+			start := block * ValuesPerScale
+			end := start + ValuesPerScale
+			if end > rows.Width {
+				end = rows.Width
+			}
+			blockSum := 0.0
+			for i := start; i < end; i++ {
+				blockSum += vector[i] * float64(values[i])
+			}
+			sum += blockSum * float64(rows.scales[row*blocksPerRow+block])
+		}
+	case FP4:
+		packedRow := rows.fp4Values[row*rows.bytesPerRowForFP4() : (row+1)*rows.bytesPerRowForFP4()]
+		for block := 0; block < blocksPerRow; block++ {
+			start := block * ValuesPerScale
+			end := start + ValuesPerScale
+			if end > rows.Width {
+				end = rows.Width
+			}
+			blockSum := 0.0
+			for i := start; i < end; i++ {
+				packed := packedRow[i/2]
+				code := packed & 15
+				if i%2 == 1 {
+					code = packed >> 4
+				}
+				blockSum += vector[i] * fp4SignedValues[code]
+			}
+			sum += blockSum * float64(rows.scales[row*blocksPerRow+block])
+		}
+	}
+	return sum
+}
+
+func (rows *Rows) makeRoomFor(numberOfRows int) {
+	totalRows := rows.numberOfRows + numberOfRows
+	blocksPerRow := numberOfScaleBlocks(rows.Width)
+	switch rows.Precision {
+	case Float64:
+		rows.float64Values = append(make([]float64, 0, totalRows*rows.Width), rows.float64Values...)
+	case Float32:
+		rows.float32Values = append(make([]float32, 0, totalRows*rows.Width), rows.float32Values...)
+	case Int8:
+		rows.int8Values = append(make([]int8, 0, totalRows*rows.Width), rows.int8Values...)
+		rows.scales = append(make([]float32, 0, totalRows*blocksPerRow), rows.scales...)
+	case FP4:
+		rows.fp4Values = append(make([]byte, 0, totalRows*rows.bytesPerRowForFP4()), rows.fp4Values...)
+		rows.scales = append(make([]float32, 0, totalRows*blocksPerRow), rows.scales...)
+	}
+}
+
+func RowsFromMatrix(matrix vectormath.Matrix, precision Precision) *Rows {
+	rows := NewRows(precision, matrix.Columns)
+	rows.makeRoomFor(matrix.Rows)
+	for row := 0; row < matrix.Rows; row++ {
+		rows.Append(matrix.Row(row))
+	}
+	return rows
+}

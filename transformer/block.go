@@ -6,6 +6,7 @@ import (
 	"transformer/mixtureofexperts"
 	"transformer/normalization"
 	"transformer/parameter"
+	"transformer/perceptron"
 	"transformer/vectormath"
 )
 
@@ -16,12 +17,14 @@ type AttentionLayer interface {
 	ForwardOneToken(input vectormath.Vector) vectormath.Vector
 	Parameters() []parameter.Parameter
 	CacheBytesUsed() int
+	Layers() []*perceptron.Layer
 }
 
 type FeedForwardLayer interface {
 	Forward(inputs vectormath.Matrix, tokenIDs []int) vectormath.Matrix
 	Backward(outputGradients vectormath.Matrix) vectormath.Matrix
 	Parameters() []parameter.Parameter
+	Layers() []*perceptron.Layer
 }
 
 type gatedFeedForwardLayer struct {
@@ -38,6 +41,15 @@ func (layer gatedFeedForwardLayer) Backward(outputGradients vectormath.Matrix) v
 
 func (layer gatedFeedForwardLayer) Parameters() []parameter.Parameter {
 	return layer.inner.Parameters()
+}
+
+func (layer gatedFeedForwardLayer) Layers() []*perceptron.Layer {
+	return layer.inner.Layers()
+}
+
+func (block *Block) Layers() []*perceptron.Layer {
+	layers := block.Attention.Layers()
+	return append(layers, block.FeedForward.Layers()...)
 }
 
 type Block struct {

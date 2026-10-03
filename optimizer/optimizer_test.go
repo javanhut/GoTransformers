@@ -9,13 +9,13 @@ import (
 func minimize(chosenOptimizer Optimizer, steps int) []float64 {
 	target := []float64{3, -2, 0.5}
 	current := parameter.Parameter{
-		Name:      "point",
-		Values:    []float64{0, 0, 0},
-		Gradients: make([]float64, 3),
+		Name:            "point",
+		Values:          []float64{0, 0, 0},
+		GradientStorage: pointerTo(make([]float64, 3)),
 	}
 	for step := 0; step < steps; step++ {
 		for i := range current.Values {
-			current.Gradients[i] = 2 * (current.Values[i] - target[i])
+			current.Gradients()[i] = 2 * (current.Values[i] - target[i])
 		}
 		chosenOptimizer.Update([]parameter.Parameter{current})
 	}
@@ -51,7 +51,11 @@ func TestDuplicateNamesPanic(t *testing.T) {
 			t.Error("two parameters with the same name did not panic")
 		}
 	}()
-	first := parameter.Parameter{Name: "same", Values: []float64{1}, Gradients: []float64{1}}
-	second := parameter.Parameter{Name: "same", Values: []float64{1}, Gradients: []float64{1}}
+	first := parameter.Parameter{Name: "same", Values: []float64{1}, GradientStorage: pointerTo([]float64{1})}
+	second := parameter.Parameter{Name: "same", Values: []float64{1}, GradientStorage: pointerTo([]float64{1})}
 	NewAdam(0.1).Update([]parameter.Parameter{first, second})
+}
+
+func pointerTo(values []float64) *[]float64 {
+	return &values
 }

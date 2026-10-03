@@ -66,18 +66,18 @@ func solveLeastSquares(chosenOptimizer Optimizer, steps int, learningRateAt func
 	targets := vectormath.MatrixTimesMatrix(targetWeights, inputs)
 
 	weights := parameter.Parameter{
-		Name:      "weights",
-		Values:    make([]float64, 12),
-		Gradients: make([]float64, 12),
-		Rows:      3,
-		Columns:   4,
+		Name:            "weights",
+		Values:          make([]float64, 12),
+		GradientStorage: pointerTo(make([]float64, 12)),
+		Rows:            3,
+		Columns:         4,
 	}
 	for step := 0; step < steps; step++ {
 		setLearningRate(learningRateAt(step))
 		current := vectormath.Matrix{Rows: 3, Columns: 4, Values: weights.Values}
 		errors := vectormath.SubtractMatrices(vectormath.MatrixTimesMatrix(current, inputs), targets)
 		gradients := vectormath.ScaleMatrix(vectormath.MatrixTimesTransposed(errors, inputs), 2/float64(len(errors.Values)))
-		copy(weights.Gradients, gradients.Values)
+		copy(weights.Gradients(), gradients.Values)
 		chosenOptimizer.Update([]parameter.Parameter{weights})
 	}
 
@@ -112,8 +112,8 @@ func TestMatrixLeastSquares(t *testing.T) {
 }
 
 func TestAdamWOnlyDecaysMatrices(t *testing.T) {
-	vector := parameter.Parameter{Name: "biases", Values: []float64{1, 2, 3}, Gradients: make([]float64, 3)}
-	matrix := parameter.Parameter{Name: "weights", Values: []float64{1, 1, 1, 1}, Gradients: make([]float64, 4), Rows: 2, Columns: 2}
+	vector := parameter.Parameter{Name: "biases", Values: []float64{1, 2, 3}, GradientStorage: pointerTo(make([]float64, 3))}
+	matrix := parameter.Parameter{Name: "weights", Values: []float64{1, 1, 1, 1}, GradientStorage: pointerTo(make([]float64, 4)), Rows: 2, Columns: 2}
 	adamW := NewAdamW(0.1, 0.5)
 	for step := 0; step < 10; step++ {
 		adamW.Update([]parameter.Parameter{vector, matrix})
@@ -130,12 +130,12 @@ func TestAdamWOnlyDecaysMatrices(t *testing.T) {
 func TestMuonSendsUseAdamWParametersToAdamW(t *testing.T) {
 	makeEmbedding := func() parameter.Parameter {
 		return parameter.Parameter{
-			Name:      "tokens.table",
-			Values:    []float64{0.5, -0.25, 1, 2, -1, 0.75},
-			Gradients: []float64{0.1, -0.3, 0.2, 0.05, -0.4, 0.6},
-			Rows:      2,
-			Columns:   3,
-			UseAdamW:  true,
+			Name:            "tokens.table",
+			Values:          []float64{0.5, -0.25, 1, 2, -1, 0.75},
+			GradientStorage: pointerTo([]float64{0.1, -0.3, 0.2, 0.05, -0.4, 0.6}),
+			Rows:            2,
+			Columns:         3,
+			UseAdamW:        true,
 		}
 	}
 	throughMuon := makeEmbedding()
@@ -158,11 +158,11 @@ func TestMuonSendsUseAdamWParametersToAdamW(t *testing.T) {
 
 func TestMuonUpdateHasTheRightSize(t *testing.T) {
 	weights := parameter.Parameter{
-		Name:      "weights",
-		Values:    make([]float64, 6*10),
-		Gradients: vectormath.NewRandomMatrix(6, 10, -1, 1).Values,
-		Rows:      6,
-		Columns:   10,
+		Name:            "weights",
+		Values:          make([]float64, 6*10),
+		GradientStorage: pointerTo(vectormath.NewRandomMatrix(6, 10, -1, 1).Values),
+		Rows:            6,
+		Columns:         10,
 	}
 	muon := NewMuon(1)
 	muon.WeightDecay = 0

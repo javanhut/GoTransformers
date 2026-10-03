@@ -10,7 +10,7 @@ import (
 type RMSNorm struct {
 	Name            string
 	Weights         vectormath.Vector
-	WeightGradients vectormath.Vector
+	WeightGradients []float64
 	Epsilon         float64
 
 	lastInputs         vectormath.Matrix
@@ -82,6 +82,6 @@ func (norm *RMSNorm) Backward(outputGradients vectormath.Matrix) vectormath.Matr
 
 func (norm *RMSNorm) Parameters() []parameter.Parameter {
 	return []parameter.Parameter{
-		{Name: norm.Name + ".weights", Values: norm.Weights, Gradients: norm.WeightGradients},
+		{Name: norm.Name + ".weights", Values: norm.Weights, GradientStorage: &norm.WeightGradients},
 	}
 }

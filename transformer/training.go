@@ -154,8 +154,8 @@ func (model *Model) TrainableParameters() []parameter.Parameter {
 
 func scaleGradients(parameters []parameter.Parameter, factor float64) {
 	for _, current := range parameters {
-		for i := range current.Gradients {
-			current.Gradients[i] *= factor
+		for i := range current.Gradients() {
+			current.Gradients()[i] *= factor
 		}
 	}
 }
@@ -163,6 +163,9 @@ func scaleGradients(parameters []parameter.Parameter, factor float64) {
 func (model *Model) TrainOnExamples(examples []Example, chosenOptimizer optimizer.Optimizer) float64 {
 	if len(examples) == 0 {
 		panic("Model.TrainOnExamples: no examples given")
+	}
+	if model.IsCompressed() {
+		panic("Model.TrainOnExamples: the weights are compressed for running the model, call DecompressWeights before training")
 	}
 	parameter.ZeroGradients(model.Parameters())
 	totalLoss := 0.0

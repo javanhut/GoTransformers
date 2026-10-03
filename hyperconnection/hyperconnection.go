@@ -330,22 +330,22 @@ func (connection *HyperConnection) Parameters() []parameter.Parameter {
 		normParameter.UseAdamW = true
 		parameters = append(parameters, normParameter)
 	}
-	matrix := func(name string, values vectormath.Matrix, gradients vectormath.Matrix) parameter.Parameter {
-		return parameter.Parameter{Name: connection.Name + "." + name, Values: values.Values, Gradients: gradients.Values, Rows: values.Rows, Columns: values.Columns}
+	matrix := func(name string, values vectormath.Matrix, gradients *vectormath.Matrix) parameter.Parameter {
+		return parameter.Parameter{Name: connection.Name + "." + name, Values: values.Values, GradientStorage: &gradients.Values, Rows: values.Rows, Columns: values.Columns}
 	}
-	vector := func(name string, values vectormath.Vector, gradients vectormath.Vector) parameter.Parameter {
-		return parameter.Parameter{Name: connection.Name + "." + name, Values: values, Gradients: gradients, UseAdamW: true}
+	vector := func(name string, values vectormath.Vector, gradients *vectormath.Vector) parameter.Parameter {
+		return parameter.Parameter{Name: connection.Name + "." + name, Values: values, GradientStorage: (*[]float64)(gradients), UseAdamW: true}
 	}
 	parameters = append(parameters,
-		matrix("inputWeights", connection.InputWeights, connection.InputWeightGradients),
-		matrix("residualWeights", connection.ResidualWeights, connection.ResidualWeightGradients),
-		matrix("outputWeights", connection.OutputWeights, connection.OutputWeightGradients),
-		vector("inputGate", connection.InputGate, connection.InputGateGradients),
-		vector("residualGate", connection.ResidualGate, connection.ResidualGateGradients),
-		vector("outputGate", connection.OutputGate, connection.OutputGateGradients),
-		vector("inputBiases", connection.InputBiases, connection.InputBiasGradients),
-		vector("residualBiases", connection.ResidualBiases, connection.ResidualBiasGradients),
-		vector("outputBiases", connection.OutputBiases, connection.OutputBiasGradients),
+		matrix("inputWeights", connection.InputWeights, &connection.InputWeightGradients),
+		matrix("residualWeights", connection.ResidualWeights, &connection.ResidualWeightGradients),
+		matrix("outputWeights", connection.OutputWeights, &connection.OutputWeightGradients),
+		vector("inputGate", connection.InputGate, &connection.InputGateGradients),
+		vector("residualGate", connection.ResidualGate, &connection.ResidualGateGradients),
+		vector("outputGate", connection.OutputGate, &connection.OutputGateGradients),
+		vector("inputBiases", connection.InputBiases, &connection.InputBiasGradients),
+		vector("residualBiases", connection.ResidualBiases, &connection.ResidualBiasGradients),
+		vector("outputBiases", connection.OutputBiases, &connection.OutputBiasGradients),
 	)
 	return parameters
 }

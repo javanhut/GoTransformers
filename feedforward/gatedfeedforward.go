@@ -72,3 +72,7 @@ func (feedForward *GatedFeedForward) Parameters() []parameter.Parameter {
 	parameters = append(parameters, feedForward.DownLayer.Parameters()...)
 	return parameters
 }
+
+func (feedForward *GatedFeedForward) Layers() []*perceptron.Layer {
+	return []*perceptron.Layer{feedForward.GateLayer, feedForward.UpLayer, feedForward.DownLayer}
+}

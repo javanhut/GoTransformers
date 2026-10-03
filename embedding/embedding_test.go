@@ -16,11 +16,11 @@ func TestEmbeddingForwardAndBackward(t *testing.T) {
 	}
 
 	embedding.Backward(vectormath.MatrixFromRows([]vectormath.Vector{{1, 1, 1}, {2, 2, 2}, {3, 3, 3}}))
-	if !reflect.DeepEqual(embedding.TableGradients.Row(2), vectormath.Vector{4, 4, 4}) {
-		t.Errorf("token 2 appears twice so its gradients should add up to 4, got %v", embedding.TableGradients.Row(2))
+	if !reflect.DeepEqual(tokenGradients(embedding, 2), vectormath.Vector{4, 4, 4}) {
+		t.Errorf("token 2 appears twice so its gradients should add up to 4, got %v", tokenGradients(embedding, 2))
 	}
-	if !reflect.DeepEqual(embedding.TableGradients.Row(0), vectormath.Vector{0, 0, 0}) {
-		t.Errorf("token 0 was never used but has gradients %v", embedding.TableGradients.Row(0))
+	if !reflect.DeepEqual(tokenGradients(embedding, 0), vectormath.Vector{0, 0, 0}) {
+		t.Errorf("token 0 was never used but has gradients %v", tokenGradients(embedding, 0))
 	}
 }
 
@@ -70,4 +70,9 @@ func TestVocabularyFileRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(loaded.IDToToken, vocabulary.IDToToken) {
 		t.Errorf("loaded %q, saved %q", loaded.IDToToken, vocabulary.IDToToken)
 	}
+}
+
+func tokenGradients(embedding *Embedding, tokenID int) vectormath.Vector {
+	size := embedding.VectorSize()
+	return embedding.TableGradients[tokenID*size : (tokenID+1)*size]
 }

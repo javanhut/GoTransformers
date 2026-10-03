@@ -7,6 +7,7 @@ import (
 	"transformer/embedding"
 	"transformer/feedforward"
 	"transformer/hyperconnection"
+	"transformer/lowprecision"
 	"transformer/mixtureofexperts"
 	"transformer/normalization"
 	"transformer/parameter"
@@ -37,6 +38,10 @@ func NewModel(settings Settings) (*Model, error) {
 		FinalNorm:      normalization.NewRMSNorm("finalNorm", settings.VectorSize),
 		OutputLayer:    perceptron.NewLayer("output", settings.VectorSize, settings.VocabularySize, activationfunction.Linear),
 	}
+	if settings.WeightPrecision != lowprecision.Float64 {
+		model.TokenEmbedding.CompressTable(settings.WeightPrecision)
+		model.OutputLayer.CompressWeights(settings.WeightPrecision)
+	}
 
 	var groupOwner *attention.SelfAttention
 	standardBlocksSoFar := 0
@@ -63,6 +68,11 @@ func NewModel(settings Settings) (*Model, error) {
 			block.AttentionConnection = hyperconnection.NewHyperConnection(name+".attentionConnection", settings.VectorSize, settings.residualStreams())
 			block.FeedForwardConnection = hyperconnection.NewHyperConnection(name+".feedForwardConnection", settings.VectorSize, settings.residualStreams())
 		}
+		if settings.WeightPrecision != lowprecision.Float64 {
+			for _, layer := range block.Layers() {
+				layer.CompressWeights(settings.WeightPrecision)
+			}
+		}
 		model.Blocks = append(model.Blocks, block)
 	}
 
@@ -73,6 +83,9 @@ func NewModel(settings Settings) (*Model, error) {
 		for _, norm := range model.allNorms() {
 			norm.Epsilon = settings.NormEpsilon
 		}
+	}
+	if settings.WeightPrecision != lowprecision.Float64 {
+		model.CompressWeights(settings.WeightPrecision)
 	}
 	return model, nil
 }
@@ -186,7 +199,7 @@ func (model *Model) Parameters() []parameter.Parameter {
 func (model *Model) NumberOfParameters() int {
 	count := 0
 	for _, current := range model.Parameters() {
-		count += len(current.Values)
+		count += current.Count()
 	}
 	return count
 }

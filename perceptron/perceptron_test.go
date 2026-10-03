@@ -5,6 +5,7 @@ import (
 	"testing"
 	"transformer/activationfunction"
 	"transformer/lossfunction"
+	"transformer/lowprecision"
 	"transformer/optimizer"
 	"transformer/parameter"
 	"transformer/vectormath"
@@ -67,8 +68,8 @@ func checkGradients(t *testing.T, network *MultiLayerPerceptron, inputs vectorma
 			lower := lossNow()
 			current.Values[i] = original
 			numerical := (higher - lower) / (2 * h)
-			if math.Abs(numerical-current.Gradients[i]) > 1e-5 {
-				t.Errorf("%s[%d]: backprop gradient %v, finite difference %v", current.Name, i, current.Gradients[i], numerical)
+			if math.Abs(numerical-current.Gradients()[i]) > 1e-5 {
+				t.Errorf("%s[%d]: backprop gradient %v, finite difference %v", current.Name, i, current.Gradients()[i], numerical)
 			}
 		}
 	}
@@ -123,4 +124,68 @@ func TestMismatchedLayersPanic(t *testing.T) {
 		NewLayer("second", 4, 1, activationfunction.ReLU),
 	}}
 	expectPanic(t, "layers that don't connect", func() { network.Forward(vectormath.NewMatrix(1, 2)) })
+}
+
+func TestNewLayerHasNoGradientMemoryUntilTraining(t *testing.T) {
+	layer := NewLayer("layer", 30, 20, activationfunction.Tanh)
+	if layer.WeightGradients != nil || layer.BiasGradients != nil {
+		t.Fatal("a new layer should not hold gradient memory")
+	}
+	layer.Forward(vectormath.NewRandomMatrix(2, 30, -1, 1))
+	if layer.WeightGradients != nil {
+		t.Fatal("running Forward should not create gradient memory")
+	}
+	layer.Backward(vectormath.NewRandomMatrix(2, 20, -1, 1))
+	if len(layer.WeightGradients) != 600 || len(layer.BiasGradients) != 20 {
+		t.Fatalf("Backward should create gradient memory, got %d and %d values", len(layer.WeightGradients), len(layer.BiasGradients))
+	}
+	layer.ReleaseGradients()
+	if layer.WeightGradients != nil {
+		t.Fatal("ReleaseGradients should free the gradient memory")
+	}
+}
+
+func TestParametersFetchedBeforeBackwardStillSeeGradients(t *testing.T) {
+	network := NewMultiLayerPerceptron([]int{2, 3, 1}, activationfunction.Tanh, activationfunction.Sigmoid)
+	parameters := network.Parameters()
+	network.Forward(vectormath.MatrixFromRows([]vectormath.Vector{{1, 0}}))
+	network.Backward(vectormath.MatrixFromRows([]vectormath.Vector{{1}}))
+	nonZero := 0
+	for _, current := range parameters {
+		for _, gradient := range current.Gradients() {
+			if gradient != 0 {
+				nonZero++
+			}
+		}
+	}
+	if nonZero == 0 {
+		t.Error("parameters fetched before Backward should see the gradients Backward made")
+	}
+}
+
+func TestCompressedLayerMatchesWithinPrecision(t *testing.T) {
+	allowedDifference := map[lowprecision.Precision]float64{
+		lowprecision.Float32: 1e-5,
+		lowprecision.Int8:    0.05,
+		lowprecision.FP4:     0.6,
+	}
+	for precision, allowed := range allowedDifference {
+		layer := NewLayer("layer", 64, 32, activationfunction.Linear)
+		inputs := vectormath.NewRandomMatrix(3, 64, -1, 1)
+		before := layer.Forward(inputs)
+		bytesBefore := layer.WeightBytes()
+		layer.CompressWeights(precision)
+		after := layer.Forward(inputs)
+		for i := range before.Values {
+			if math.Abs(before.Values[i]-after.Values[i]) > allowed {
+				t.Errorf("%v value %d: full precision %v, compressed %v", precision, i, before.Values[i], after.Values[i])
+				break
+			}
+		}
+		if layer.WeightBytes() >= bytesBefore {
+			t.Errorf("%v: compressed weights use %d bytes, full precision used %d", precision, layer.WeightBytes(), bytesBefore)
+		}
+		expectPanic(t, "Backward on a compressed layer", func() { layer.Backward(vectormath.NewMatrix(3, 32)) })
+		expectPanic(t, "optimizing a compressed layer", func() { optimizer.NewSGD(0.1).Update(layer.Parameters()) })
+	}
 }

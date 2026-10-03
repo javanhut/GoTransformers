@@ -10,8 +10,11 @@ type Optimizer interface {
 }
 
 func checkGradientSize(current parameter.Parameter) {
-	if len(current.Gradients) != len(current.Values) {
-		panic(fmt.Sprintf("parameter %q has %d values but %d gradients", current.Name, len(current.Values), len(current.Gradients)))
+	if current.ReadOnly {
+		panic(fmt.Sprintf("parameter %q is read only (its weights are compressed for running the model), decompress it before training", current.Name))
+	}
+	if len(current.Gradients()) != len(current.Values) {
+		panic(fmt.Sprintf("parameter %q has %d values but %d gradients", current.Name, len(current.Values), len(current.Gradients())))
 	}
 }
 

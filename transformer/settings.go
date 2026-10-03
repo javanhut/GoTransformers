@@ -50,6 +50,8 @@ type Settings struct {
 	CachePrecision        lowprecision.Precision
 	TrainAtCachePrecision bool
 
+	WeightPrecision lowprecision.Precision
+
 	UseMixtureOfExperts   bool
 	NumberOfSharedExperts int
 	NumberOfRoutedExperts int
@@ -191,6 +193,9 @@ func (settings Settings) Check() error {
 				return fmt.Errorf("NumberOfIndexerHeads can't be negative, got %d", settings.NumberOfIndexerHeads)
 			}
 		}
+	}
+	if settings.WeightPrecision < lowprecision.Float64 || settings.WeightPrecision > lowprecision.FP4 {
+		return fmt.Errorf("unknown WeightPrecision %v", settings.WeightPrecision)
 	}
 	if settings.CachePrecision < lowprecision.Float64 || settings.CachePrecision > lowprecision.FP4 {
 		return fmt.Errorf("unknown CachePrecision %v", settings.CachePrecision)

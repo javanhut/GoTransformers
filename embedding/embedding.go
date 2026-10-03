@@ -3,14 +3,16 @@ package embedding
 import (
 	"fmt"
 	"math"
+	"transformer/lowprecision"
 	"transformer/parameter"
 	"transformer/vectormath"
 )
 
 type Embedding struct {
-	Name           string
-	Table          vectormath.Matrix
-	TableGradients vectormath.Matrix
+	Name            string
+	Table           vectormath.Matrix
+	TableGradients  []float64
+	CompressedTable *lowprecision.Rows
 
 	lastTokenIDs []int
 }
@@ -21,9 +23,8 @@ func NewEmbedding(name string, vocabularySize int, vectorSize int) *Embedding {
 	}
 	limit := 1 / math.Sqrt(float64(vectorSize))
 	return &Embedding{
-		Name:           name,
-		Table:          vectormath.NewRandomMatrix(vocabularySize, vectorSize, -limit, limit),
-		TableGradients: vectormath.NewMatrix(vocabularySize, vectorSize),
+		Name:  name,
+		Table: vectormath.NewRandomMatrix(vocabularySize, vectorSize, -limit, limit),
 	}
 }
 
@@ -35,50 +36,72 @@ func (embedding *Embedding) VectorSize() int {
 	return embedding.Table.Columns
 }
 
-func (embedding *Embedding) Forward(tokenIDs []int) vectormath.Matrix {
-	outputs := vectormath.NewMatrix(len(tokenIDs), embedding.VectorSize())
-	for position, tokenID := range tokenIDs {
-		if tokenID < 0 || tokenID >= embedding.VocabularySize() {
-			panic(fmt.Sprintf("embedding %q: token ID %d at position %d is outside the vocabulary of %d tokens", embedding.Name, tokenID, position, embedding.VocabularySize()))
-		}
-		outputs.SetRow(position, embedding.Table.Row(tokenID))
-	}
-
-	embedding.lastTokenIDs = make([]int, len(tokenIDs))
-	copy(embedding.lastTokenIDs, tokenIDs)
-	return outputs
+func (embedding *Embedding) IsCompressed() bool {
+	return embedding.CompressedTable != nil
 }
 
-func (embedding *Embedding) Backward(outputGradients vectormath.Matrix) {
-	if outputGradients.Rows != len(embedding.lastTokenIDs) || outputGradients.Columns != embedding.VectorSize() {
-		panic(fmt.Sprintf("embedding %q: output gradients are %dx%d but the last Forward produced %dx%d", embedding.Name, outputGradients.Rows, outputGradients.Columns, len(embedding.lastTokenIDs), embedding.VectorSize()))
+func (embedding *Embedding) CompressTable(precision lowprecision.Precision) {
+	if embedding.IsCompressed() {
+		panic(fmt.Sprintf("embedding %q: table is already compressed", embedding.Name))
 	}
-	for position, tokenID := range embedding.lastTokenIDs {
-		tokenGradients := embedding.TableGradients.Row(tokenID)
-		positionGradients := outputGradients.Row(position)
-		for i := range tokenGradients {
-			tokenGradients[i] += positionGradients[i]
-		}
+	embedding.CompressedTable = lowprecision.RowsFromMatrix(embedding.Table, precision)
+	embedding.Table = vectormath.Matrix{Rows: embedding.Table.Rows, Columns: embedding.Table.Columns}
+	embedding.TableGradients = nil
+}
+
+func (embedding *Embedding) TableBytes() int {
+	if embedding.IsCompressed() {
+		return embedding.CompressedTable.BytesUsed()
 	}
+	return len(embedding.Table.Values) * 8
+}
+
+func (embedding *Embedding) VectorFor(tokenID int) vectormath.Vector {
+	if tokenID < 0 || tokenID >= embedding.VocabularySize() {
+		panic(fmt.Sprintf("embedding %q: token ID %d is outside the vocabulary of %d tokens", embedding.Name, tokenID, embedding.VocabularySize()))
+	}
+	if embedding.IsCompressed() {
+		return embedding.CompressedTable.Row(tokenID)
+	}
+	return vectormath.CopyVector(embedding.Table.Row(tokenID))
 }
 
 func (embedding *Embedding) TableRows(tokenIDs []int) vectormath.Matrix {
 	rows := vectormath.NewMatrix(len(tokenIDs), embedding.VectorSize())
 	for position, tokenID := range tokenIDs {
-		if tokenID < 0 || tokenID >= embedding.VocabularySize() {
-			panic(fmt.Sprintf("embedding %q: token ID %d at position %d is outside the vocabulary of %d tokens", embedding.Name, tokenID, position, embedding.VocabularySize()))
-		}
-		rows.SetRow(position, embedding.Table.Row(tokenID))
+		rows.SetRow(position, embedding.VectorFor(tokenID))
 	}
 	return rows
+}
+
+func (embedding *Embedding) Forward(tokenIDs []int) vectormath.Matrix {
+	outputs := embedding.TableRows(tokenIDs)
+	embedding.lastTokenIDs = make([]int, len(tokenIDs))
+	copy(embedding.lastTokenIDs, tokenIDs)
+	return outputs
+}
+
+func (embedding *Embedding) makeGradients() {
+	if embedding.IsCompressed() {
+		panic(fmt.Sprintf("embedding %q: table is compressed for running the model and can't be trained", embedding.Name))
+	}
+	if len(embedding.TableGradients) != len(embedding.Table.Values) {
+		embedding.TableGradients = make([]float64, len(embedding.Table.Values))
+	}
+}
+
+func (embedding *Embedding) ReleaseGradients() {
+	embedding.TableGradients = nil
 }
 
 func (embedding *Embedding) AddGradients(tokenIDs []int, gradients vectormath.Matrix) {
 	if gradients.Rows != len(tokenIDs) || gradients.Columns != embedding.VectorSize() {
 		panic(fmt.Sprintf("embedding %q: got %dx%d gradients for %d tokens of size %d", embedding.Name, gradients.Rows, gradients.Columns, len(tokenIDs), embedding.VectorSize()))
 	}
+	embedding.makeGradients()
+	vectorSize := embedding.VectorSize()
 	for position, tokenID := range tokenIDs {
-		tokenGradients := embedding.TableGradients.Row(tokenID)
+		tokenGradients := embedding.TableGradients[tokenID*vectorSize : (tokenID+1)*vectorSize]
 		positionGradients := gradients.Row(position)
 		for i := range tokenGradients {
 			tokenGradients[i] += positionGradients[i]
@@ -86,9 +109,21 @@ func (embedding *Embedding) AddGradients(tokenIDs []int, gradients vectormath.Ma
 	}
 }
 
+func (embedding *Embedding) Backward(outputGradients vectormath.Matrix) {
+	if outputGradients.Rows != len(embedding.lastTokenIDs) || outputGradients.Columns != embedding.VectorSize() {
+		panic(fmt.Sprintf("embedding %q: output gradients are %dx%d but the last Forward produced %dx%d", embedding.Name, outputGradients.Rows, outputGradients.Columns, len(embedding.lastTokenIDs), embedding.VectorSize()))
+	}
+	embedding.AddGradients(embedding.lastTokenIDs, outputGradients)
+}
+
 func (embedding *Embedding) Parameters() []parameter.Parameter {
+	if embedding.IsCompressed() {
+		return []parameter.Parameter{
+			{Name: embedding.Name + ".table", Rows: embedding.Table.Rows, Columns: embedding.Table.Columns, UseAdamW: true, ReadOnly: true},
+		}
+	}
 	return []parameter.Parameter{
-		{Name: embedding.Name + ".table", Values: embedding.Table.Values, Gradients: embedding.TableGradients.Values, Rows: embedding.Table.Rows, Columns: embedding.Table.Columns, UseAdamW: true},
+		{Name: embedding.Name + ".table", Values: embedding.Table.Values, GradientStorage: &embedding.TableGradients, Rows: embedding.Table.Rows, Columns: embedding.Table.Columns, UseAdamW: true},
 	}
 }
 
@@ -113,4 +148,17 @@ func PositionalEncodingAt(position int, vectorSize int) vectormath.Vector {
 		}
 	}
 	return encoding
+}
+
+func (embedding *Embedding) SetTable(values []float64) error {
+	if len(values) != embedding.Table.Rows*embedding.Table.Columns {
+		return fmt.Errorf("embedding %q: got %d values but the table is %dx%d", embedding.Name, len(values), embedding.Table.Rows, embedding.Table.Columns)
+	}
+	if embedding.IsCompressed() {
+		newTable := vectormath.Matrix{Rows: embedding.Table.Rows, Columns: embedding.Table.Columns, Values: values}
+		embedding.CompressedTable = lowprecision.RowsFromMatrix(newTable, embedding.CompressedTable.Precision)
+	} else {
+		copy(embedding.Table.Values, values)
+	}
+	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"transformer/lowprecision"
 	"transformer/safetensors"
 )
 
@@ -254,5 +255,43 @@ func TestSmolLM2GeneratesSensibleText(t *testing.T) {
 	t.Logf("def fibonacci(n):%s", code)
 	if !strings.Contains(code, "return") || !strings.Contains(code, "if n") {
 		t.Errorf("fibonacci continuation doesn't look like code: %q", code)
+	}
+}
+
+func TestSmolLM2CompressedWeightsStayClose(t *testing.T) {
+	folder := needDownloadedModel(t)
+	fullModel, loadedTokenizer, err := LoadLlama(folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promptIDs := loadedTokenizer.Encode("The capital of France is")
+	fullScores := fullModel.Forward(promptIDs).Row(len(promptIDs) - 1)
+	fullBest := indexOfLargest(fullScores)
+	fullModel = nil
+
+	allowedDifference := map[lowprecision.Precision]float64{
+		lowprecision.Float32: 1e-3,
+		lowprecision.Int8:    1.5,
+	}
+	for precision, allowed := range allowedDifference {
+		compressedModel, _, err := LoadLlamaWithPrecision(folder, precision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if compressedModel.GradientBytes() != 0 {
+			t.Errorf("%v: a loaded model should hold no gradient memory, has %d bytes", precision, compressedModel.GradientBytes())
+		}
+		scores := compressedModel.Forward(promptIDs).Row(len(promptIDs) - 1)
+		largestDifference := 0.0
+		for i := range scores {
+			largestDifference = math.Max(largestDifference, math.Abs(scores[i]-fullScores[i]))
+		}
+		if largestDifference > allowed {
+			t.Errorf("%v: scores differ from full precision by up to %v", precision, largestDifference)
+		}
+		if best := indexOfLargest(scores); best != fullBest {
+			t.Errorf("%v: most likely next token is %d, full precision says %d", precision, best, fullBest)
+		}
+		t.Logf("%v: largest score difference from full precision %.2e", precision, largestDifference)
 	}
 }

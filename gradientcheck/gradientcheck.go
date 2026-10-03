@@ -38,8 +38,8 @@ func Compare(forward ForwardFn, backward BackwardFn, parameters []parameter.Para
 			lower := lossNow()
 			current.Values[i] = original
 			numerical := (higher - lower) / (2 * stepSize)
-			if tooDifferent(numerical, current.Gradients[i]) {
-				problems = append(problems, fmt.Sprintf("%s[%d]: backward gave %v, finite difference gave %v", current.Name, i, current.Gradients[i], numerical))
+			if tooDifferent(numerical, current.Gradients()[i]) {
+				problems = append(problems, fmt.Sprintf("%s[%d]: backward gave %v, finite difference gave %v", current.Name, i, current.Gradients()[i], numerical))
 			}
 		}
 	}

@@ -10,6 +10,9 @@ import (
 func checkNamesCanBeSaved(parameters []parameter.Parameter) error {
 	seen := map[string]bool{}
 	for _, current := range parameters {
+		if current.IsCompressed() {
+			return fmt.Errorf("parameter %q is compressed for running the model, decompress it before saving", current.Name)
+		}
 		if current.Name == "" {
 			return fmt.Errorf("a parameter has no name, every saved parameter needs a name")
 		}

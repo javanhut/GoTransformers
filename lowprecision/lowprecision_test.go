@@ -78,3 +78,26 @@ func TestDropOldestRows(t *testing.T) {
 		}
 	}
 }
+
+func TestDotRowMatchesReadingTheRow(t *testing.T) {
+	for _, precision := range []Precision{Float64, Float32, Int8, FP4} {
+		rows := NewRows(precision, 37)
+		for row := 0; row < 4; row++ {
+			values := vectormath.NewVector(37)
+			for i := range values {
+				values[i] = vectormath.RandomNumberBetween(-3, 3)
+			}
+			rows.Append(values)
+		}
+		vector := vectormath.NewVector(37)
+		for i := range vector {
+			vector[i] = vectormath.RandomNumberBetween(-1, 1)
+		}
+		for row := 0; row < 4; row++ {
+			want := vectormath.DotProduct(rows.Row(row), vector)
+			if got := rows.DotRow(row, vector); math.Abs(got-want) > 1e-9 {
+				t.Errorf("%v row %d: DotRow gave %v, reading the row and multiplying gave %v", precision, row, got, want)
+			}
+		}
+	}
+}

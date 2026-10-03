@@ -19,7 +19,7 @@ func (model *Model) StartGenerating() {
 
 func (model *Model) NextTokenScores(tokenID int) vectormath.Vector {
 	model.checkTokenIDs([]int{tokenID})
-	value := vectormath.CopyVector(model.TokenEmbedding.Table.Row(tokenID))
+	value := model.TokenEmbedding.VectorFor(tokenID)
 	if !model.Settings.UseRotaryPositions {
 		value = vectormath.Add(value, embedding.PositionalEncodingAt(model.generatedPositions, model.Settings.VectorSize))
 	}

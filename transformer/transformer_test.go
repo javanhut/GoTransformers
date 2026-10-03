@@ -196,8 +196,8 @@ func checkWholeModelGradients(t *testing.T, name string, settings Settings) {
 			lower := model.TrainingLoss(tokenIDs)
 			current.Values[i] = original
 			numerical := (higher - lower) / (2 * stepSize)
-			if math.Abs(numerical-current.Gradients[i]) > 1e-5*math.Max(1, math.Abs(numerical)) {
-				t.Errorf("%s: %s[%d]: backward gave %v, finite difference gave %v", name, current.Name, i, current.Gradients[i], numerical)
+			if math.Abs(numerical-current.Gradients()[i]) > 1e-5*math.Max(1, math.Abs(numerical)) {
+				t.Errorf("%s: %s[%d]: backward gave %v, finite difference gave %v", name, current.Name, i, current.Gradients()[i], numerical)
 			}
 		}
 	}

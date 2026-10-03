@@ -5,11 +5,21 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"time"
 	"transformer/gpu"
+	"transformer/lowprecision"
 	"transformer/pretrained"
 	"transformer/vectormath"
 )
+
+func memoryInUse() float64 {
+	runtime.GC()
+	debug.FreeOSMemory()
+	var memory runtime.MemStats
+	runtime.ReadMemStats(&memory)
+	return float64(memory.HeapAlloc) / 1e9
+}
 
 func main() {
 	modelFolder := flag.String("model", "", "folder with config.json, model.safetensors and tokenizer.json (a Hugging Face Llama or Qwen 2 model)")
@@ -17,10 +27,16 @@ func main() {
 	numberOfTokens := flag.Int("tokens", 30, "how many new tokens to generate")
 	temperature := flag.Float64("temperature", 0, "0 always picks the most likely token, higher values are more random")
 	useGPU := flag.Bool("gpu", false, "use a GPU through Vulkan if one is found")
+	precisionName := flag.String("precision", "Float32", "how to store the weights: Float64, Float32, Int8 or FP4")
 	flag.Parse()
 
 	if *modelFolder == "" {
 		fmt.Println("give a model folder with -model, for example one downloaded from https://huggingface.co/HuggingFaceTB/SmolLM2-135M")
+		os.Exit(1)
+	}
+	var precision lowprecision.Precision
+	if err := precision.UnmarshalText([]byte(*precisionName)); err != nil {
+		fmt.Println(err, "- use Float64, Float32, Int8 or FP4")
 		os.Exit(1)
 	}
 	if *useGPU {
@@ -35,14 +51,13 @@ func main() {
 	fmt.Println("doing math on:", vectormath.CurrentBackend().Name())
 
 	loadStart := time.Now()
-	model, loadedTokenizer, err := pretrained.LoadLlama(*modelFolder)
+	model, loadedTokenizer, err := pretrained.LoadLlamaWithPrecision(*modelFolder, precision)
 	if err != nil {
 		fmt.Println("could not load the model:", err)
 		os.Exit(1)
 	}
-	var memory runtime.MemStats
-	runtime.ReadMemStats(&memory)
-	fmt.Printf("loaded in %s, using %.1f GB of memory\n", time.Since(loadStart).Round(time.Millisecond), float64(memory.HeapAlloc)/1e9)
+	fmt.Printf("loaded in %s, weights stored as %v: %.0f MB of weights, %.2f GB of memory in use\n",
+		time.Since(loadStart).Round(time.Millisecond), precision, float64(model.WeightBytes())/1e6, memoryInUse())
 	fmt.Println("model:", model.Describe())
 
 	promptIDs := loadedTokenizer.Encode(*prompt)

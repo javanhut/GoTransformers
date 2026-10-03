@@ -2,6 +2,7 @@ package transformer
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"transformer/weightfile"
 )
@@ -34,8 +35,12 @@ func LoadModel(path string) (*Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := weightfile.LoadBinary(path, model.Parameters()); err != nil {
+	savedValues, err := weightfile.ReadBinary(path)
+	if err != nil {
 		return nil, err
+	}
+	if err := model.SetWeights(savedValues); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return model, nil
 }
