@@ -181,8 +181,11 @@ func TestWholeModelGradients(t *testing.T) {
 	multiToken := tinySettings()
 	multiToken.MultiTokenPrediction = true
 	multiToken.NumberOfResidualStreams = 2
+	tied := tinySettings()
+	tied.TieEmbeddings = true
 	checkWholeModelGradients(t, "plain", tinySettings())
 	checkWholeModelGradients(t, "multi-token prediction and mHC", multiToken)
+	checkWholeModelGradients(t, "tied embeddings", tied)
 }
 
 func checkWholeModelGradients(t *testing.T, name string, settings Settings) {

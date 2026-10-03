@@ -186,6 +186,9 @@ func TestOneStepMatchesCPU(t *testing.T) {
 	clamped := smallTestSettings()
 	clamped.FeedForwardClampLimit = 0.05
 
+	tied := smallTestSettings()
+	tied.TieEmbeddings = true
+
 	cases := []struct {
 		name     string
 		settings transformer.Settings
@@ -199,6 +202,8 @@ func TestOneStepMatchesCPU(t *testing.T) {
 		{"clamped SwiGLU", clamped, []int{10, 10}, false},
 		{"padded uneven batch", groupedKeys, []int{13, 5, 9, 2}, false},
 		{"answer-only examples", partialHalves, []int{12, 7, 9}, true},
+		{"tied embeddings", tied, []int{10, 10}, false},
+		{"tied embeddings answer-only", tied, []int{12, 7, 9}, true},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

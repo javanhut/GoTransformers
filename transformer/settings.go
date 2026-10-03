@@ -71,6 +71,12 @@ type Settings struct {
 	ResidualDropout  float64
 	AttentionDropout float64
 	AdapterDropout   float64
+
+	// TieEmbeddings shares one weight matrix between the token embedding and the
+	// output projection (weight tying). It roughly halves the parameters a small
+	// model spends on its vocabulary and usually improves quality. Only valid at
+	// full precision (tied weights can't be compressed).
+	TieEmbeddings bool
 }
 
 func SmallSettings(vocabularySize int) Settings {
@@ -228,6 +234,9 @@ func (settings Settings) Check() error {
 	}
 	if settings.MultiTokenLossWeight < 0 {
 		return fmt.Errorf("MultiTokenLossWeight can't be negative, got %v", settings.MultiTokenLossWeight)
+	}
+	if settings.TieEmbeddings && settings.WeightPrecision != lowprecision.Float64 {
+		return fmt.Errorf("TieEmbeddings needs full-precision weights (tied weights can't be compressed)")
 	}
 	return nil
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/javanhut/GoTransformers/perceptron"
 	"github.com/javanhut/GoTransformers/vectormath"
 	"slices"
+	"strings"
 )
 
 type Model struct {
@@ -43,6 +44,16 @@ func NewModel(settings Settings) (*Model, error) {
 	if settings.WeightPrecision != lowprecision.Float64 {
 		model.TokenEmbedding.CompressTable(settings.WeightPrecision)
 		model.OutputLayer.CompressWeights(settings.WeightPrecision)
+	}
+	if settings.TieEmbeddings {
+		// Share one matrix (and one gradient buffer) between the input embedding
+		// and the output projection: both forward passes read it, both backward
+		// passes accumulate into the shared gradient, and Parameters() exposes it
+		// once (as the embedding table) so the optimizer updates it a single time.
+		model.OutputLayer.Weights = model.TokenEmbedding.Table
+		shared := make([]float64, len(model.TokenEmbedding.Table.Values))
+		model.TokenEmbedding.TableGradients = shared
+		model.OutputLayer.WeightGradients = shared
 	}
 
 	var groupOwner *attention.SelfAttention
@@ -198,6 +209,11 @@ func (model *Model) Parameters() []parameter.Parameter {
 	}
 	parameters = append(parameters, model.FinalNorm.Parameters()...)
 	for _, outputParameter := range model.OutputLayer.Parameters() {
+		// When tied, the output weight matrix is the token embedding, already
+		// listed above; expose only the output bias here so it isn't updated twice.
+		if model.Settings.TieEmbeddings && strings.HasSuffix(outputParameter.Name, ".weights") {
+			continue
+		}
 		outputParameter.UseAdamW = true
 		parameters = append(parameters, outputParameter)
 	}

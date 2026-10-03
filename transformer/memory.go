@@ -88,6 +88,11 @@ func (model *Model) weightSetters() map[string]func(values []float64) error {
 		setters[layer.Name+".biases"] = layer.SetBiases
 	}
 	setters[model.TokenEmbedding.Name+".table"] = model.TokenEmbedding.SetTable
+	if model.Settings.TieEmbeddings {
+		// The output weight is the embedding table (set via ".table"); it is not
+		// saved separately, so don't expect or require an "output.weights" entry.
+		delete(setters, model.OutputLayer.Name+".weights")
+	}
 	for _, current := range model.Parameters() {
 		if _, alreadySet := setters[current.Name]; alreadySet {
 			continue
