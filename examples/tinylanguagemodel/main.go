@@ -87,7 +87,7 @@ func main() {
 	}
 	settings.ResidualDropout = *dropoutRate
 	settings.AttentionDropout = *dropoutRate
-	settings.TieOutputToEmbedding = *tieWeights
+	settings.TieEmbeddings = *tieWeights
 
 	var chosenOptimizer optimizer.Resumable
 	switch *optimizerName {

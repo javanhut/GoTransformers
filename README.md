@@ -189,7 +189,7 @@ textTokenizer.SaveToFile("story-model.weights.tokenizer")
 Warm up and decay the learning rate, clip gradients, watch held-out loss and keep the best model (the same works with `transformer.NewTrainer` on the CPU, and with `gputraining.NewDataParallelTrainer(devices, ...)` over several GPUs):
 
 ```go
-settings.TieOutputToEmbedding = true
+settings.TieEmbeddings = true
 options := gputraining.DefaultTrainerOptions(0.001, 0.1)
 options.Schedule = optimizer.WarmupThenCosine(250, 5000, 0.1)
 options.MaximumGradientNorm = 1

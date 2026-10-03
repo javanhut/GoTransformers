@@ -65,14 +65,18 @@ type Settings struct {
 	MultiTokenPrediction bool
 	MultiTokenLossWeight float64
 
-	TieOutputToEmbedding bool
-
 	AdapterRank  int
 	AdapterAlpha float64
 
 	ResidualDropout  float64
 	AttentionDropout float64
 	AdapterDropout   float64
+
+	// TieEmbeddings shares one weight matrix between the token embedding and the
+	// output projection (weight tying). It roughly halves the parameters a small
+	// model spends on its vocabulary and usually improves quality. Works with
+	// compressed weights too.
+	TieEmbeddings bool
 }
 
 func SmallSettings(vocabularySize int) Settings {

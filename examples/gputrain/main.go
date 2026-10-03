@@ -146,7 +146,7 @@ func main() {
 	settings.NumberOfHeads = *numberOfHeads
 	settings.NumberOfKeyValueHeads = *keyValueHeads
 	settings.FeedForwardSize = *feedForwardSize
-	settings.TieOutputToEmbedding = *tieWeights
+	settings.TieEmbeddings = *tieWeights
 	settings.ResidualDropout = *dropoutRate
 	settings.AttentionDropout = *dropoutRate
 	model, err := transformer.NewModel(settings)

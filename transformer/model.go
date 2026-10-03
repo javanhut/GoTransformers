@@ -40,7 +40,7 @@ func NewModel(settings Settings) (*Model, error) {
 		FinalNorm:      normalization.NewRMSNorm("finalNorm", settings.VectorSize),
 		OutputLayer:    perceptron.NewLayer("output", settings.VectorSize, settings.VocabularySize, activationfunction.Linear),
 	}
-	if settings.TieOutputToEmbedding {
+	if settings.TieEmbeddings {
 		model.tieOutputToEmbedding()
 	}
 	if settings.WeightPrecision != lowprecision.Float64 {
@@ -202,7 +202,7 @@ func (model *Model) Parameters() []parameter.Parameter {
 	}
 	parameters = append(parameters, model.FinalNorm.Parameters()...)
 	for _, outputParameter := range model.OutputLayer.Parameters() {
-		if model.Settings.TieOutputToEmbedding && outputParameter.Name == model.OutputLayer.Name+".weights" {
+		if model.Settings.TieEmbeddings && outputParameter.Name == model.OutputLayer.Name+".weights" {
 			continue
 		}
 		outputParameter.UseAdamW = true
@@ -262,7 +262,7 @@ func (model *Model) tieOutputToEmbedding() {
 }
 
 func (model *Model) addTiedOutputGradientsToEmbedding() {
-	if !model.Settings.TieOutputToEmbedding {
+	if !model.Settings.TieEmbeddings {
 		return
 	}
 	outputLayer := model.OutputLayer

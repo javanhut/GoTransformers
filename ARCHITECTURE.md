@@ -191,7 +191,7 @@ Both run the same steps:
 
 `transformer.Trainer` runs the same steps with two more between 3 and 4: it clips the gradients to `MaximumGradientNorm` (one global norm over every trainable parameter), and sets the optimizer's learning rate to the schedule's fraction of the peak rate for this step. The peak rates are read from the optimizer when the trainer is made, so Muon's two rates keep their ratio. `training.Loop` drives any trainer: it asks for a batch, takes a step, and every `EvaluateEvery` steps measures the held-out loss and saves the model if it is the best so far.
 
-**Weight tying.** With `TieOutputToEmbedding` the output layer's `Weights` is the embedding's `Table`: the same slice, because the table is vocabulary × vector and the output weights are outputs × inputs, which is the same layout. The output layer still computes its own weight gradients in `Backward`; the model adds them into the table's gradients right after, and zeroes them. `Parameters()` lists only `tokens.table`, so optimizers and files see one matrix.
+**Weight tying.** With `TieEmbeddings` the output layer's `Weights` is the embedding's `Table`: the same slice, because the table is vocabulary × vector and the output weights are outputs × inputs, which is the same layout. The output layer still computes its own weight gradients in `Backward`; the model adds them into the table's gradients right after, and zeroes them. `Parameters()` lists only `tokens.table`, so optimizers and files see one matrix.
 
 The loss counts only the positions predicting answer tokens, which is how answer-only fine-tuning works; plain text counts every position.
 

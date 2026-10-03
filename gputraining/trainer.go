@@ -320,7 +320,7 @@ func (trainer *Trainer) newLayerTiedToTokenTable(layer *perceptron.Layer) (layer
 }
 
 func (trainer *Trainer) isTied() bool {
-	return trainer.model.Settings.TieOutputToEmbedding
+	return trainer.model.Settings.TieEmbeddings
 }
 
 func (trainer *Trainer) uploadModel() error {
