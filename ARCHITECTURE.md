@@ -1,0 +1,209 @@
+# Architecture
+
+How GoTransformers is put together: the layers of packages, the rules every component follows, and how training, generation, the GPU and the file formats work.
+
+## Design rules
+
+- **Pure Go, one binary.** No cgo, no Python, no build-time SDKs. The only dependency is [purego](https://github.com/ebitengine/purego), which lets the `gpu` package call the Vulkan driver at run time.
+- **Readable over clever.** Long descriptive names (`numberOfInputs`, `example`, `neuron`), plain index loops, small named functions. A function should read clearly without comments, so the code has none.
+- **Optional acceleration.** Every operation works on the CPU. The GPU is something you switch on, never something you need.
+- **Checked against numbers.** Every backward pass is tested against finite differences, and every model setup is tested to give the same output during training as during one-token-at-a-time generation.
+
+## Package layers
+
+Each package only imports packages from the layers above it.
+
+```
+1. math and storage
+   vectormath        Vector, Matrix, CPU backend, Backend switch, random numbers
+   parameter         Parameter: a named slice of weights plus where its gradients live
+   lowprecision      Rows stored as Float64, Float32, Int8 or FP4
+
+2. building blocks
+   activationfunction   scalar activations, softmax
+   lossfunction         mean squared error, softmax cross-entropy
+   perceptron           Perceptron, Layer, MultiLayerPerceptron
+   normalization        RMSNorm, LayerNorm
+   embedding            token embeddings, vocabulary, sine-wave positions
+   gradientcheck        finite-difference checker for any Forward/Backward pair
+   optimizer            SGD, momentum, Adam, AdamW, Muon, saveable state
+
+3. transformer parts
+   feedforward          gated feed-forward (SwiGLU, GeGLU, ReGLU, clamped SwiGLU)
+   attention            SelfAttention, CompressedAttention, generation caches
+   mixtureofexperts     shared and routed experts
+   hyperconnection      mHC residual streams
+
+4. models
+   transformer          Settings, Block, Model, training, generation, checkpoints
+
+5. outside world
+   tokenizer            byte-level BPE, Hugging Face tokenizer.json
+   safetensors          read and write safetensors files
+   pretrained           load Llama and Qwen 2 models from Hugging Face folders
+   weightfile           save and load named weights as text or binary
+   datafile             CSV, TSV, text, question/answer pairs
+   gpu                  Vulkan backend for vectormath
+```
+
+## Data conventions
+
+**Vectors and matrices.** `vectormath.Vector` is `[]float64`. `vectormath.Matrix` stores `Rows × Columns` values in one row-major slice. `matrix.Row(i)` returns a view into that slice, so writing to it changes the matrix.
+
+**Rows are tokens or examples.** Every component takes a matrix with one row per token (or per training example) and returns one row per token. A sequence of 48 tokens with vector size 64 is a 48×64 matrix. Generation uses the same code with 1-row matrices.
+
+**Layer weights are one row per neuron.** `perceptron.Layer.Weights` is `outputs × inputs`, the same orientation as a single `Perceptron`'s weights repeated once per neuron, and the same as PyTorch's `nn.Linear`. A forward pass is `inputs × Weightsᵀ + biases`.
+
+**Names.** Every trainable value belongs to a `parameter.Parameter` with a unique dotted name such as `block3.attention.query.weights`. Optimizers remember their state by name, and weight files store weights by name.
+
+## Forward and backward
+
+Every trainable component has the same shape:
+
+```go
+outputs := component.Forward(inputs)          // remembers what it needs
+inputGradients := component.Backward(outputGradients)
+parameters := component.Parameters()
+```
+
+- `Forward` stores what `Backward` needs (its inputs, activations, attention weights). Calling `Forward` again replaces that memory.
+- `Backward` adds to the gradients (`+=`), so several backward passes can be summed. `parameter.ZeroGradients` clears them before a training step.
+- Components that contain other components call them in order in `Forward` and in reverse order in `Backward`.
+
+### Gradient memory
+
+Gradients are only created when training needs them.
+
+- `parameter.Parameter` has a `GradientStorage` pointer to the field where its owner keeps gradients, and a `Gradients()` method that creates them on first use.
+- Layers and embeddings start with no gradient memory and create it in their first `Backward`.
+- A parameter list fetched before `Backward` still sees the new gradients, because it reads through the pointer.
+- `model.ReleaseGradients()` frees them after training. A model that's only used for generation never holds any.
+
+## The CPU and the GPU
+
+All heavy math goes through four functions in `vectormath`:
+
+| Function | Used for |
+|---|---|
+| `MatrixTimesTransposedWeights(inputs, weights)` | layer forward pass |
+| `MatrixTimesWeights(gradients, weights)` | layer backward pass, input gradients |
+| `TransposedTimesMatrix(gradients, inputs)` | layer backward pass, weight gradients |
+| `MatrixTimesMatrix`, `MatrixTimesTransposed` | everything else, including Muon |
+
+These call whichever `vectormath.Backend` is active:
+
+- **`CPUBackend`** (the default) splits rows across `GOMAXPROCS` threads, or splits columns when there are too few rows. That second case is what makes one-token generation use every core.
+- **`gpu.Device`** loads the Vulkan library at run time (`libvulkan.so.1`, `vulkan-1.dll` or MoltenVK), compiles nothing, and runs one embedded SPIR-V shader for multiplies plus one for few-row multiplies. Values are float32 on the GPU. Calls smaller than `MinimumWorkForGPU` go back to the CPU because copying would cost more than it saves.
+- **Weight cache.** When `device.KeepWeightsOnGPU` is on, weight matrices stay on the GPU between calls. They're uploaded again only when `vectormath.WeightsVersion()` changes. Every optimizer step, `weightfile.CopyInto` and `model.SetWeights` call `vectormath.MarkWeightsChanged()`. Code that edits weight values by hand must call it too, which is why the cache is off by default.
+
+## The transformer model
+
+`transformer.NewModel(settings)` builds:
+
+```
+token IDs
+  → TokenEmbedding                         (+ sine-wave positions if rotary positions are off)
+  → [expand to N streams]                  (only with mHC)
+  → Block × NumberOfBlocks
+  → [collapse streams]
+  → FinalNorm → OutputLayer → scores, one row per token, one column per vocabulary entry
+```
+
+Each `Block`:
+
+```
+x → AttentionNorm → Attention → + x → FeedForwardNorm → FeedForward → + → out
+```
+
+With mHC (`NumberOfResidualStreams > 1`), each `+` becomes a `HyperConnection`. It mixes the streams with a learned doubly stochastic matrix, feeds a learned mix of them into the sublayer, and writes the output back into every stream.
+
+- **`Block.Attention`** is an `AttentionLayer`: a `*attention.SelfAttention` or a `*attention.CompressedAttention`, chosen per block by `Settings.AttentionPattern`.
+- **`Block.FeedForward`** is a `FeedForwardLayer`: SwiGLU (optionally clamped), or a `*mixtureofexperts.MixtureOfExperts` when `UseMixtureOfExperts` is on. Token IDs are passed down because the first blocks can route experts by token ID (hash routing).
+- **Multi-token prediction** (`MultiTokenPrediction`) adds a small extra block that also predicts the token after next. During training its loss is added with weight `MultiTokenLossWeight`, and both predictions share `OutputLayer` by stacking their rows into one call.
+
+### Attention
+
+`attention.SelfAttention` has one core routine, `attendTo`, used by both training and generation, which is why the two give identical results. Around it:
+
+- **Which positions a token looks at:** `HideFutureTokens` (causal), `WindowSize` (sliding window), `TopK` (only the k highest-scoring positions).
+- **Shape of the cache:** `NumberOfKeyValueHeads` (grouped-query or multi-query attention) and `ShareKeyAsValue` (one entry is both key and value). Together they can shrink the cache 8× or more.
+- **Positions:** rotary positions on all or the last `RotaryDimensions` of each head, with configurable base and Hugging Face's rotate-half pairing. When keys double as values, outputs are rotated back so they carry relative positions.
+- **Stability:** `NormalizeQueriesAndKeys` (RMSNorm per head) and attention sinks (a learned extra logit per head that lets a head attend to nothing).
+- **Sharing across layers:**
+
+| Mode | DeepSeek name | Computes its own | Borrows from an earlier layer |
+|---|---|---|---|
+| `OwnKeysAndValues` | Full | keys, values, choices | nothing |
+| `BorrowKeysAndValues` | Reindex | queries, choices | keys and values |
+| `BorrowKeysValuesAndChoices` | Reuse | queries | keys, values and top-k choices |
+
+  Borrowers send their key and value gradients back to the owner, so `Backward` must run in reverse order of `Forward`, as it always does in a model.
+
+`attention.CompressedAttention` follows DeepSeek-V4:
+
+- Every `CompressionRate` tokens are merged into one entry, using learned per-channel softmax weights and position biases. With `Overlap`, each entry also uses the previous block (CSA).
+- A sliding window of uncompressed recent entries handles the token's own block.
+- With `TopK > 0`, a lightning indexer scores the compressed entries and only the top k are used. The indexer gets no gradient from the main loss. It's trained in `Backward` to match where attention actually looked (a KL divergence weighted by `IndexerLossWeight`). `AttendToAllWhileTraining` is the dense warm-up stage.
+
+### Generation and the cache
+
+```go
+model.StartGenerating()          // fresh caches
+scores := model.Feed(promptIDs)  // one token at a time
+nextID := transformer.PickToken(scores, temperature)
+scores = model.NextTokenScores(nextID)
+```
+
+- `SelfAttention` keeps keys and values in `lowprecision.Rows` at `CachePrecision`. With a window, old rows are dropped so the cache stays bounded. `TrainAtCachePrecision` rounds keys and values the same way during training, so the model learns to cope with the rounding.
+- `CompressedAttention` keeps compressed entries, their indexer keys, the window, and the uncompressed tail of the current block.
+- `model.SaveGenerationState(path)` and `LoadGenerationState(path)` write all of that to disk with a fingerprint of the model's settings and weights, so a long prompt is processed once and reused later.
+
+### Compressed weights
+
+`model.CompressWeights(precision)` (or `Settings.WeightPrecision`, or `pretrained.LoadLlamaWithPrecision`) replaces each layer's float64 `Weights` with `CompressedWeights`, a `lowprecision.Rows`.
+
+- The forward pass uses `Rows.DotRow`, which reads Float32, Int8 or FP4 directly without expanding the weights.
+- Int8 and FP4 store one float32 scale per 16 values.
+- Compressed parameters report themselves as `ReadOnly` with nil `Values`, so optimizers and weight saving refuse them with a clear message. `DecompressWeights()` turns training back on.
+- When `Settings.WeightPrecision` is set, `NewModel` compresses each block as soon as it's built, and the loader writes each tensor straight into compressed storage, so a full float64 copy never exists.
+
+## Training
+
+```go
+model.TrainBatch(sequences, chosenOptimizer)             // learn every next token
+model.TrainOnExamples(examples, chosenOptimizer)         // learn only the answer part
+```
+
+Both run the same steps:
+1. Zero the gradients.
+2. For each sequence, run forward and backward. The gradients add up across the batch.
+3. Divide the gradients by the batch size.
+4. Update every parameter whose name doesn't start with a prefix passed to `Freeze`.
+5. Nudge the expert-balance biases.
+
+The loss counts only the positions predicting answer tokens, which is how answer-only fine-tuning works; plain text counts every position.
+
+**Optimizers.**
+- `Muon` uses hybrid Newton-Schulz orthogonalization on weight matrices, and an inner `AdamW` for vectors and anything marked `UseAdamW` (embeddings, the output layer, norms, mHC biases).
+- `Adam` and `AdamW` keep running averages by parameter name.
+- Every optimizer can save and restore its state, which is what lets `SaveCheckpoint` / `LoadCheckpoint` resume a run exactly: they save the weights, optimizer state, frozen prefixes, step count and random generator state.
+
+## File formats
+
+| File | Written by | Format |
+|---|---|---|
+| `name.weights` | `weightfile.SaveBinary`, `model.Save` | `GOTRANSFORMERS-WEIGHTS-1`, then for each parameter: name length, name, value count, little-endian float64 values |
+| `name.txt` | `weightfile.SaveText` | `name count` then the values as text, separated by spaces |
+| `name.weights.settings.json` | `model.Save` | the model's `Settings` as JSON, with readable names for enums |
+| checkpoint folder | `model.SaveCheckpoint` | `model.weights` (+ settings), `optimizer.state` (gob), `progress.json` |
+| generation state | `model.SaveGenerationState` | gob, with format tag `gotransformers-generation-1` and a model fingerprint |
+| tokenizer | `tokenizer.SaveToFile` | text, format tag `gotransformers-tokenizer-1` |
+| vocabulary | `Vocabulary.SaveToFile` | one quoted token per line |
+| `*.safetensors` | `safetensors.Write` | the standard safetensors layout (F32 or F64 out; F64, F32, F16 and BF16 in) |
+
+## Testing
+
+- **Gradient checks:** `gradientcheck.Compare(forward, backward, parameters, inputs)` nudges every weight and input by 1e-6 and compares the numerical slope with what `Backward` computed. Every layer, norm, attention option, compression setup, expert routing, mHC and the whole model are checked this way.
+- **Generation matches training:** each attention setup and model setup runs a sequence all at once and then one token at a time through the cache; the outputs must agree to 1e-9.
+- **Mutation checks:** while building, a bug was put in on purpose for each major piece to confirm the tests catch it.
+- **Real model:** with `GOTRANSFORMERS_SMOLLM2` set, the loaded SmolLM2-135M is compared against an independent plain-loop Go implementation in the test file (agreement to about 1e-13), and the tokenizer is checked against the model's own vocabulary.

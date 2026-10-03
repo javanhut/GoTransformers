@@ -10,14 +10,14 @@ import (
 )
 
 func downloadedModelFolder() string {
-	if folder := os.Getenv("GOTRANSFORMERS_SMOLLM2"); folder != "" {
-		return folder
-	}
-	return "/tmp/claude-1000/-home-javanstorm-Development-GoTransformers/f9636082-b0cb-4f11-a15e-fe96206115e4/scratchpad/smollm2"
+	return os.Getenv("GOTRANSFORMERS_SMOLLM2")
 }
 
 func loadSmolLM2(t *testing.T) (*Tokenizer, map[string]int) {
 	t.Helper()
+	if downloadedModelFolder() == "" {
+		t.Skip("set GOTRANSFORMERS_SMOLLM2 to a folder holding SmolLM2-135M's tokenizer.json to run this test")
+	}
 	path := filepath.Join(downloadedModelFolder(), "tokenizer.json")
 	contents, err := os.ReadFile(path)
 	if err != nil {

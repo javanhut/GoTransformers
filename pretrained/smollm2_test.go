@@ -12,15 +12,15 @@ import (
 )
 
 func downloadedModelFolder() string {
-	if folder := os.Getenv("GOTRANSFORMERS_SMOLLM2"); folder != "" {
-		return folder
-	}
-	return "/tmp/claude-1000/-home-javanstorm-Development-GoTransformers/f9636082-b0cb-4f11-a15e-fe96206115e4/scratchpad/smollm2"
+	return os.Getenv("GOTRANSFORMERS_SMOLLM2")
 }
 
 func needDownloadedModel(t *testing.T) string {
 	t.Helper()
 	folder := downloadedModelFolder()
+	if folder == "" {
+		t.Skip("set GOTRANSFORMERS_SMOLLM2 to a folder holding SmolLM2-135M (config.json, model.safetensors, tokenizer.json) to run this test")
+	}
 	if _, err := os.Stat(filepath.Join(folder, "model.safetensors")); err != nil {
 		t.Skipf("SmolLM2-135M is not downloaded (%v)", err)
 	}
